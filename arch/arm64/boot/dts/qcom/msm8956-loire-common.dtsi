@@ -66,7 +66,7 @@
 					dev = "/dev/block/platform/soc/7824900.sdhci/by-name/system";
 					type = "ext4";
 					mnt_flags = "ro,barrier=1";
-					fsmgr_flags = "wait,verify";
+					fsmgr_flags = "wait";
 					status = "ok";
 				};
 				odm {
@@ -216,7 +216,7 @@
 			preset_x_max = <1079>;
 			preset_y_max = <1919>;
 			preset_n_fingers = <10>;
-			wakeup_gesture_supported = <0>;
+			wakeup_gesture_supported = <1>;
 			wakeup_gesture_lpm_disabled = <1>;
 			wakeup_gesture_timeout = <0>;
 			wakeup_gesture {
