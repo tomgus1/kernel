@@ -130,16 +130,249 @@ static void gic_redist_wait_for_rwp(void)
 }
 
 #ifdef CONFIG_ARM64
-static DEFINE_STATIC_KEY_FALSE(is_cavium_thunderx);
 
 static u64 __maybe_unused gic_read_iar(void)
 {
-	if (static_branch_unlikely(&is_cavium_thunderx))
+	if (cpus_have_const_cap(ARM64_WORKAROUND_CAVIUM_23154))
 		return gic_read_iar_cavium_thunderx();
 	else
 		return gic_read_iar_common();
 }
 #endif
+
+void gic_v3_dist_save(void)
+{
+	void __iomem *base = gic_data.dist_base;
+	int reg, i;
+
+	if (!base)
+		return;
+
+	bitmap_zero(irqs_restore, MAX_IRQ);
+
+	for (reg = SAVED_ICFGR; reg < NUM_SAVED_GICD_REGS; reg++) {
+		for_each_spi_irq_word(i, reg) {
+			saved_spi_regs_start[reg][i] =
+				read_spi_word_offset(base, reg, i);
+			changed_spi_regs_start[reg][i] = 0;
+		}
+	}
+
+	for (i = 32; i < IRQ_NR_BOUND(gic_data.irq_nr); i++) {
+		gic_data.saved_spi_router[i] =
+			gic_read_irouter(base + GICD_IROUTER + i * 8);
+		gic_data.changed_spi_router[i] = 0;
+	}
+}
+
+static void _gicd_check_reg(enum gicd_save_restore_reg reg)
+{
+	void __iomem *base = gic_data.dist_base;
+	u32 *saved_spi_cfg = saved_spi_regs_start[reg];
+	u32 *changed_spi_cfg = changed_spi_regs_start[reg];
+	u32 bits_per_irq = gicd_reg_bits_per_irq[reg];
+	u32 current_cfg = 0;
+	int i, j = SPI_START_IRQ, l;
+	u32 k;
+
+	for_each_spi_irq_word(i, reg) {
+		current_cfg = read_spi_word_offset(base, reg, i);
+		if (current_cfg != saved_spi_cfg[i]) {
+			for (k = current_cfg ^ saved_spi_cfg[i],
+			     l = 0; k ; k >>= bits_per_irq, l++) {
+				if (k & UMASK_LOW(bits_per_irq))
+					set_bit(j+l, irqs_restore);
+			}
+			changed_spi_cfg[i] = current_cfg ^ saved_spi_cfg[i];
+		}
+		j += 32 / bits_per_irq;
+	}
+}
+
+#define _gic_v3_dist_check_icfgr()	\
+		_gicd_check_reg(SAVED_ICFGR)
+#define _gic_v3_dist_check_ipriorityr()	\
+		_gicd_check_reg(SAVED_IPRIORITYR)
+#define _gic_v3_dist_check_isenabler()	\
+		_gicd_check_reg(SAVED_IS_ENABLER)
+
+static void _gic_v3_dist_check_irouter(void)
+{
+	void __iomem *base = gic_data.dist_base;
+	u64 current_irouter_cfg = 0;
+	int i;
+
+	for (i = 32; i < IRQ_NR_BOUND(gic_data.irq_nr); i++) {
+		if (test_bit(i, irqs_ignore_restore))
+			continue;
+		current_irouter_cfg = gic_read_irouter(
+					base + GICD_IROUTER + i * 8);
+		if (current_irouter_cfg != gic_data.saved_spi_router[i]) {
+			set_bit(i, irqs_restore);
+			gic_data.changed_spi_router[i] =
+			    current_irouter_cfg ^ gic_data.saved_spi_router[i];
+		}
+	}
+}
+
+static void _gic_v3_dist_restore_reg(enum gicd_save_restore_reg reg)
+{
+	void __iomem *base = gic_data.dist_base;
+	int i;
+
+	for_each_spi_irq_word(i, reg) {
+		if (changed_spi_regs_start[reg][i])
+			restore_spi_word_offset(base, reg, i);
+	}
+
+	/* Commit all restored configurations before subsequent writes */
+	wmb();
+}
+
+#define _gic_v3_dist_restore_icfgr()	_gic_v3_dist_restore_reg(SAVED_ICFGR)
+#define _gic_v3_dist_restore_ipriorityr()		\
+		_gic_v3_dist_restore_reg(SAVED_IPRIORITYR)
+
+static void _gic_v3_dist_restore_set_reg(u32 offset)
+{
+	void __iomem *base = gic_data.dist_base;
+	int i, j = SPI_START_IRQ, l;
+	int irq_nr = IRQ_NR_BOUND(gic_data.irq_nr) - SPI_START_IRQ;
+
+	for (i = 0; i < DIV_ROUND_UP(irq_nr, 32); i++, j += 32) {
+		u32 reg_val = readl_relaxed_no_log(base + offset + i * 4 + 4);
+		bool irqs_restore_updated = 0;
+
+		for (l = 0; l < 32; l++) {
+			if (test_bit(j+l, irqs_restore)) {
+				reg_val |= BIT(l);
+				irqs_restore_updated = 1;
+			}
+		}
+
+		if (irqs_restore_updated) {
+			writel_relaxed_no_log(
+				reg_val, base + offset + i * 4 + 4);
+		}
+	}
+
+	/* Commit restored configuration updates before subsequent writes */
+	wmb();
+}
+
+#define _gic_v3_dist_restore_isenabler()		\
+		_gic_v3_dist_restore_reg(SAVED_IS_ENABLER)
+
+#define _gic_v3_dist_restore_ispending()		\
+		_gic_v3_dist_restore_set_reg(GICD_ISPENDR)
+
+static void _gic_v3_dist_restore_irouter(void)
+{
+	void __iomem *base = gic_data.dist_base;
+	int i;
+
+	for (i = 32; i < IRQ_NR_BOUND(gic_data.irq_nr); i++) {
+		if (test_bit(i, irqs_ignore_restore))
+			continue;
+		if (gic_data.changed_spi_router[i]) {
+			gic_write_irouter(gic_data.saved_spi_router[i],
+						base + GICD_IROUTER + i * 8);
+		}
+	}
+
+	/* Commit GICD_IROUTER writes before subsequent writes */
+	wmb();
+}
+
+static void _gic_v3_dist_clear_reg(u32 offset)
+{
+	void __iomem *base = gic_data.dist_base;
+	int i, j = SPI_START_IRQ, l;
+	int irq_nr = IRQ_NR_BOUND(gic_data.irq_nr) - SPI_START_IRQ;
+
+	for (i = 0; i < DIV_ROUND_UP(irq_nr, 32); i++, j += 32) {
+		u32 clear = 0;
+		bool irqs_restore_updated = 0;
+
+		for (l = 0; l < 32; l++) {
+			if (test_bit(j+l, irqs_restore)) {
+				clear |= BIT(l);
+				irqs_restore_updated = 1;
+			}
+		}
+
+		if (irqs_restore_updated) {
+			writel_relaxed_no_log(
+				clear, base + offset + i * 4 + 4);
+		}
+	}
+
+	/* Commit clearing of irq config before subsequent writes */
+	wmb();
+}
+
+#define _gic_v3_dist_set_icenabler()		\
+		_gic_v3_dist_clear_reg(GICD_ICENABLER)
+
+#define _gic_v3_dist_set_icpending()		\
+		_gic_v3_dist_clear_reg(GICD_ICPENDR)
+
+#define _gic_v3_dist_set_icactive()		\
+		_gic_v3_dist_clear_reg(GICD_ICACTIVER)
+
+/* Restore GICD state for SPIs. SPI configuration is restored
+ * for GICD_ICFGR, GICD_ISENABLER, GICD_IPRIORITYR, GICD_IROUTER
+ * registers. Following is the sequence for restore:
+ *
+ * 1. For SPIs, check whether any of GICD_ICFGR, GICD_ISENABLER,
+ *    GICD_IPRIORITYR, GICD_IROUTER, current configuration is
+ *    different from saved configuration.
+ *
+ * For all irqs, with mismatched configurations,
+ *
+ * 2. Set GICD_ICENABLER and wait for its completion.
+ *
+ * 3. Restore any changed GICD_ICFGR, GICD_IPRIORITYR, GICD_IROUTER
+ *    configurations.
+ *
+ * 4. Set GICD_ICACTIVER.
+ *
+ * 5. Set pending for the interrupt.
+ *
+ * 6. Restore Enable bit of interrupt and wait for its completion.
+ *
+ */
+void gic_v3_dist_restore(void)
+{
+	if (!gic_data.dist_base)
+		return;
+
+	_gic_v3_dist_check_icfgr();
+	_gic_v3_dist_check_ipriorityr();
+	_gic_v3_dist_check_isenabler();
+	_gic_v3_dist_check_irouter();
+
+	if (bitmap_empty(irqs_restore, IRQ_NR_BOUND(gic_data.irq_nr)))
+		return;
+
+	_gic_v3_dist_set_icenabler();
+	gic_dist_wait_for_rwp();
+
+	_gic_v3_dist_restore_icfgr();
+	_gic_v3_dist_restore_ipriorityr();
+	_gic_v3_dist_restore_irouter();
+
+	_gic_v3_dist_set_icactive();
+
+	_gic_v3_dist_set_icpending();
+	_gic_v3_dist_restore_ispending();
+
+	_gic_v3_dist_restore_isenabler();
+	gic_dist_wait_for_rwp();
+
+	/* Commit all writes before proceeding */
+	wmb();
+}
 
 /*
  * gic_show_pending_irq - Shows the pending interrupts
@@ -724,7 +957,7 @@ static void gic_send_sgi(u64 cluster_id, u16 tlist, unsigned int irq)
 	       MPIDR_TO_SGI_AFFINITY(cluster_id, 1)	|
 	       tlist << ICC_SGI1R_TARGET_LIST_SHIFT);
 
-	pr_debug("CPU%d: ICC_SGI1R_EL1 %llx\n", smp_processor_id(), val);
+	pr_devel("CPU%d: ICC_SGI1R_EL1 %llx\n", smp_processor_id(), val);
 	gic_write_sgi1r(val);
 }
 
@@ -1068,14 +1301,6 @@ static const struct irq_domain_ops partition_domain_ops = {
 	.select = gic_irq_domain_select,
 };
 
-static void gicv3_enable_quirks(void)
-{
-#ifdef CONFIG_ARM64
-	if (cpus_have_cap(ARM64_WORKAROUND_CAVIUM_23154))
-		static_branch_enable(&is_cavium_thunderx);
-#endif
-}
-
 static int __init gic_init_bases(void __iomem *dist_base,
 				 struct redist_region *rdist_regs,
 				 u32 nr_redist_regions,
@@ -1097,8 +1322,6 @@ static int __init gic_init_bases(void __iomem *dist_base,
 	gic_data.redist_regions = rdist_regs;
 	gic_data.nr_redist_regions = nr_redist_regions;
 	gic_data.redist_stride = redist_stride;
-
-	gicv3_enable_quirks();
 
 	/*
 	 * Find out how many interrupts are supported.

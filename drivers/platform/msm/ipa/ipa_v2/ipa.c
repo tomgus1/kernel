@@ -3939,12 +3939,8 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 
 #ifdef CONFIG_IPC_LOGGING
 	ipa_ctx->logbuf = ipc_log_context_create(IPA_IPC_LOG_PAGES, "ipa", 0);
-	if (ipa_ctx->logbuf == NULL) {
-		IPAERR("failed to get logbuf\n");
-		result = -ENOMEM;
-		goto fail_logbuf;
-	}
-#endif
+	if (ipa_ctx->logbuf == NULL)
+		IPADBG("failed to create IPC log, continue...\n");
 
 	ipa_ctx->pdev = ipa_dev;
 	ipa_ctx->uc_pdev = ipa_dev;
@@ -4491,8 +4487,6 @@ fail_bind:
 fail_mem_ctrl:
 #ifdef CONFIG_IPC_LOGGING
 	ipc_log_context_destroy(ipa_ctx->logbuf);
-fail_logbuf:
-#endif
 	kfree(ipa_ctx);
 	ipa_ctx = NULL;
 fail_mem_ctx:

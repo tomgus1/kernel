@@ -338,51 +338,8 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(esr_actual),
 	POWER_SUPPLY_ATTR(esr_nominal),
 	POWER_SUPPLY_ATTR(soh),
-#ifdef CONFIG_QPNP_SMBFG_NEWGEN_EXTENSION
-	POWER_SUPPLY_ATTR(skin_temp),
-	POWER_SUPPLY_ATTR(dcin_valid),
-	POWER_SUPPLY_ATTR(usbin_valid),
-	POWER_SUPPLY_ATTR(wireless_suspend_for_dev1),
-	POWER_SUPPLY_ATTR(wireless_mode),
-	POWER_SUPPLY_ATTR(wireless_thermal_v_limit),
-#endif
-#if defined(CONFIG_QPNP_SMBCHARGER_EXTENSION) || \
-    defined(CONFIG_QPNP_FG_EXTENSION)
-	POWER_SUPPLY_ATTR(usbin_det),
-	POWER_SUPPLY_ATTR(sub_type),
-	POWER_SUPPLY_ATTR(enable_shutdown_at_low_battery),
-	POWER_SUPPLY_ATTR(fv_cfg),
-	POWER_SUPPLY_ATTR(fv_cmp_cfg),
-	POWER_SUPPLY_ATTR(batt_aging),
-	POWER_SUPPLY_ATTR(input_current_state),
-	POWER_SUPPLY_ATTR(chgerr_sts),
-#endif /* CONFIG_QPNP_SMBCHARGER_EXTENSION || CONFIG_QPNP_FG_EXTENSION */
-#if defined(CONFIG_QPNP_SMBFG_NEWGEN_EXTENSION) || \
-    defined(CONFIG_QPNP_SMBCHARGER_EXTENSION)   || \
-    defined(CONFIG_QPNP_FG_EXTENSION)
-	POWER_SUPPLY_ATTR(lrc_enable),
-	POWER_SUPPLY_ATTR(lrc_socmax),
-	POWER_SUPPLY_ATTR(lrc_socmin),
-	POWER_SUPPLY_ATTR(lrc_not_startup),
-	POWER_SUPPLY_ATTR(max_charge_current),
-	POWER_SUPPLY_ATTR(auth),
-	POWER_SUPPLY_ATTR(time_to_cap_learning),
-	POWER_SUPPLY_ATTR(int_cld),
-	POWER_SUPPLY_ATTR(smart_charging_activation),
-	POWER_SUPPLY_ATTR(smart_charging_interruption),
-	POWER_SUPPLY_ATTR(smart_charging_status),
-	POWER_SUPPLY_ATTR(charge_full_raw),
-	POWER_SUPPLY_ATTR(learning_counter),
-	POWER_SUPPLY_ATTR(recharge_counter),
-	POWER_SUPPLY_ATTR(full_counter),
-	POWER_SUPPLY_ATTR(real_temp),
-	POWER_SUPPLY_ATTR(legacy_cable_status),
-	POWER_SUPPLY_ATTR(running_status),
-	POWER_SUPPLY_ATTR(charger_type_determined),
-	POWER_SUPPLY_ATTR(monotonic_soc),
-#endif /* CONFIG_QPNP_SMBFG_NEWGEN_EXTENSION ||
-	* CONFIG_QPNP_SMBCHARGER_EXTENSION   ||
-	* CONFIG_QPNP_FG_EXTENSION */
+	POWER_SUPPLY_ATTR(qc_opti_disable),
+	POWER_SUPPLY_ATTR(fcc_stepper_enable),
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
 	/* Properties of type `const char *' */

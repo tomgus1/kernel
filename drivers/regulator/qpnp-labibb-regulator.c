@@ -736,6 +736,7 @@ struct qpnp_labibb {
 	struct device			*dev;
 	struct platform_device		*pdev;
 	struct regmap			*regmap;
+	struct class			labibb_class;
 	struct pmic_revid_data		*pmic_rev_id;
 	u16				lab_base;
 	u16				ibb_base;
@@ -767,6 +768,8 @@ struct qpnp_labibb {
 	bool				notify_lab_vreg_ok_sts;
 	bool				detect_lab_sc;
 	bool				sc_detected;
+	 /* Tracks the secure UI mode entry/exit */
+	bool				secure_mode;
 	u32				swire_2nd_cmd_delay;
 	u32				swire_ibb_ps_enable_delay;
 };
@@ -2936,6 +2939,9 @@ static int qpnp_lab_regulator_enable(struct regulator_dev *rdev)
 	int rc;
 	struct qpnp_labibb *labibb  = rdev_get_drvdata(rdev);
 
+	if (labibb->secure_mode)
+		return 0;
+
 	if (labibb->sc_detected) {
 		pr_info("Short circuit detected: disabled LAB/IBB rails\n");
 		return 0;
@@ -2976,9 +2982,8 @@ static int qpnp_lab_regulator_disable(struct regulator_dev *rdev)
 	u8 val;
 	struct qpnp_labibb *labibb  = rdev_get_drvdata(rdev);
 
-#ifdef CONFIG_SOMC_LCD_OCP_ENABLED
-	qpnp_lab_interrupt_disable_ctl(labibb);
-#endif /* CONFIG_SOMC_LCD_OCP_ENABLED */
+	if (labibb->secure_mode)
+		return 0;
 
 	if (labibb->lab_vreg.vreg_enabled && !labibb->swire_control) {
 
@@ -3177,7 +3182,7 @@ static int qpnp_lab_regulator_set_voltage(struct regulator_dev *rdev,
 	u8 val;
 	struct qpnp_labibb *labibb = rdev_get_drvdata(rdev);
 
-	if (labibb->swire_control)
+	if (labibb->swire_control || labibb->secure_mode)
 		return 0;
 
 	if (min_uV < labibb->lab_vreg.min_volt) {
@@ -3578,6 +3583,8 @@ static int register_qpnp_lab_regulator(struct qpnp_labibb *labibb,
 	}
 
 	if (is_lab_vreg_ok_irq_available(labibb)) {
+		irq_set_status_flags(labibb->lab_vreg.lab_vreg_ok_irq,
+				     IRQ_DISABLE_UNLAZY);
 		rc = devm_request_threaded_irq(labibb->dev,
 				labibb->lab_vreg.lab_vreg_ok_irq, NULL,
 				lab_vreg_ok_handler,
@@ -3591,6 +3598,8 @@ static int register_qpnp_lab_regulator(struct qpnp_labibb *labibb,
 	}
 
 	if (labibb->lab_vreg.lab_sc_irq != -EINVAL) {
+		irq_set_status_flags(labibb->lab_vreg.lab_sc_irq,
+				     IRQ_DISABLE_UNLAZY);
 		rc = devm_request_threaded_irq(labibb->dev,
 				labibb->lab_vreg.lab_sc_irq, NULL,
 				labibb_sc_err_handler,
@@ -4448,6 +4457,9 @@ static int qpnp_ibb_regulator_enable(struct regulator_dev *rdev)
 	int rc = 0;
 	struct qpnp_labibb *labibb  = rdev_get_drvdata(rdev);
 
+	if (labibb->secure_mode)
+		return 0;
+
 	if (labibb->sc_detected) {
 		pr_info("Short circuit detected: disabled LAB/IBB rails\n");
 		return 0;
@@ -4476,9 +4488,8 @@ static int qpnp_ibb_regulator_disable(struct regulator_dev *rdev)
 	int rc;
 	struct qpnp_labibb *labibb  = rdev_get_drvdata(rdev);
 
-#ifdef CONFIG_SOMC_LCD_OCP_ENABLED
-	qpnp_ibb_interrupt_disable_ctl(labibb);
-#endif /* CONFIG_SOMC_LCD_OCP_ENABLED */
+	if (labibb->secure_mode)
+		return 0;
 
 	if (labibb->ibb_vreg.vreg_enabled && !labibb->swire_control) {
 
@@ -4518,7 +4529,7 @@ static int qpnp_ibb_regulator_set_voltage(struct regulator_dev *rdev,
 
 	struct qpnp_labibb *labibb = rdev_get_drvdata(rdev);
 
-	if (labibb->swire_control)
+	if (labibb->swire_control || labibb->secure_mode)
 		return 0;
 
 	rc = labibb->ibb_ver_ops->set_voltage(labibb, min_uV, max_uV);
@@ -4766,6 +4777,8 @@ static int register_qpnp_ibb_regulator(struct qpnp_labibb *labibb,
 	}
 
 	if (labibb->ibb_vreg.ibb_sc_irq != -EINVAL) {
+		irq_set_status_flags(labibb->ibb_vreg.ibb_sc_irq,
+				     IRQ_DISABLE_UNLAZY);
 		rc = devm_request_threaded_irq(labibb->dev,
 				labibb->ibb_vreg.ibb_sc_irq, NULL,
 				labibb_sc_err_handler,
@@ -4948,104 +4961,48 @@ static int qpnp_labibb_check_ttw_supported(struct qpnp_labibb *labibb)
 	return rc;
 }
 
-#ifdef CONFIG_SOMC_LCD_OCP_ENABLED
-static irqreturn_t lab_vreg_handler(int irq, void *_chip)
+static ssize_t qpnp_labibb_irq_control(struct class *c,
+				       struct class_attribute *attr,
+				       const char *buf, size_t count)
 {
-	u8 val;
-	int rc;
-	struct qpnp_labibb *labibb = _chip;
+	struct qpnp_labibb *labibb = container_of(c, struct qpnp_labibb,
+						  labibb_class);
+	int val, rc;
 
-	pr_err("%s: LAB VREG_NG interrupt!\n", __func__);
-	qpnp_labibb_interrupt_disable_ctl(labibb);
+	rc = kstrtouint(buf, 0, &val);
+	if (rc < 0)
+		return rc;
 
-	if (!labibb->lab_vreg.vreg_enabled) {
-		pr_err("%s: false detection display is off\n", __func__);
-		goto exit;
+	if (val != 0 && val != 1)
+		return count;
+
+	/* Disable irqs */
+	if (val == 1 && !labibb->secure_mode) {
+		if (labibb->lab_vreg.lab_vreg_ok_irq > 0)
+			disable_irq(labibb->lab_vreg.lab_vreg_ok_irq);
+		if (labibb->lab_vreg.lab_sc_irq > 0)
+			disable_irq(labibb->lab_vreg.lab_sc_irq);
+		if (labibb->ibb_vreg.ibb_sc_irq > 0)
+			disable_irq(labibb->ibb_vreg.ibb_sc_irq);
+		labibb->secure_mode = true;
+	} else if (val == 0 && labibb->secure_mode) {
+		if (labibb->lab_vreg.lab_vreg_ok_irq > 0)
+			enable_irq(labibb->lab_vreg.lab_vreg_ok_irq);
+		if (labibb->lab_vreg.lab_sc_irq > 0)
+			enable_irq(labibb->lab_vreg.lab_sc_irq);
+		if (labibb->ibb_vreg.ibb_sc_irq > 0)
+			enable_irq(labibb->ibb_vreg.ibb_sc_irq);
+		labibb->secure_mode = false;
 	}
 
-	/* lab status1 */
-	rc = qpnp_labibb_read(labibb, labibb->lab_base + REG_LAB_STATUS1, 
-				&val, 1);
-	if (rc) {
-		pr_err("%s: read register %x failed rc = %d\n",
-				__func__, REG_LAB_STATUS1, rc);
-		goto exit;
-	}
-
-	if (!(val & LAB_STATUS1_VREG_OK_BIT))
-		pr_err("%s: LAB VREG NG!!!\n", __func__);
-	else
-		goto false_detection;
-
-	/* start vreg check */
-	if (labibb_vreg_check.vreg_check_working)
-		goto exit;
-
-	labibb_vreg_check.vreg_check_working = true;
-	labibb_vreg_check.current_chatter_cnt = CHATTER_CNT_START;
-	schedule_delayed_work(&labibb_vreg_check.vreg_check_work,
-		msecs_to_jiffies(
-			labibb_vreg_check.target_chatter_check_interval));
-	goto exit;
-
-false_detection:
-	rc = qpnp_labibb_interrupt_enable_ctl(labibb, VREG_WORKER_PASSIVE);
-	if (rc)
-		pr_err("%s: qpnp_labibb_interrupt_enable_ctl error\n",
-							__func__);
-exit:
-	return IRQ_HANDLED;
+	return count;
 }
 
-static irqreturn_t ibb_vreg_handler(int irq, void *_chip)
-{
-	u8 val;
-	int rc;
-	struct qpnp_labibb *labibb = _chip;
-
-	pr_err("%s: IBB VREG_NG interrupt!\n", __func__);
-	qpnp_labibb_interrupt_disable_ctl(labibb);
-
-	if (!labibb->ibb_vreg.vreg_enabled) {
-		pr_err("%s: false detection display is off\n", __func__);
-		goto exit;
-	}
-
-	/* ibb status1 */
-	rc = qpnp_labibb_read(labibb, labibb->ibb_base + REG_IBB_STATUS1,
-				&val, 1);
-	if (rc) {
-		pr_err("%s: read register %x failed rc = %d\n",
-				__func__, REG_IBB_STATUS1, rc);
-		goto exit;
-	}
-
-	if (!(val & IBB_STATUS1_VREG_OK_BIT))
-		pr_err("%s: IBB VREG NG!!!\n", __func__);
-	else
-		goto false_detection;
-
-	/* start vreg check */
-	if (labibb_vreg_check.vreg_check_working)
-		goto exit;
-
-	labibb_vreg_check.vreg_check_working = true;
-	labibb_vreg_check.current_chatter_cnt = CHATTER_CNT_START;
-	schedule_delayed_work(&labibb_vreg_check.vreg_check_work,
-		msecs_to_jiffies(
-			labibb_vreg_check.target_chatter_check_interval));
-	goto exit;
-
-false_detection:
-	rc = qpnp_labibb_interrupt_enable_ctl(labibb, VREG_WORKER_PASSIVE);
-	if (rc)
-		pr_err("%s: qpnp_labibb_interrupt_enable_ctl error\n",
-							__func__);
-
-exit:
-	return IRQ_HANDLED;
-}
-#endif /* CONFIG_SOMC_LCD_OCP_ENABLED */
+static struct class_attribute labibb_attributes[] = {
+	[0] = __ATTR(secure_mode, 0664, NULL,
+			 qpnp_labibb_irq_control),
+	 __ATTR_NULL,
+};
 
 static int qpnp_labibb_regulator_probe(struct platform_device *pdev)
 {
@@ -5269,6 +5226,17 @@ static int qpnp_labibb_regulator_probe(struct platform_device *pdev)
 			CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	labibb->sc_err_check_timer.function = labibb_check_sc_err_count;
 	dev_set_drvdata(&pdev->dev, labibb);
+
+	labibb->labibb_class.name = "lcd_bias";
+	labibb->labibb_class.owner = THIS_MODULE;
+	labibb->labibb_class.class_attrs = labibb_attributes;
+
+	rc = class_register(&labibb->labibb_class);
+	if (rc < 0) {
+		pr_err("Failed to register labibb class rc=%d\n", rc);
+		return rc;
+	}
+
 	pr_info("LAB/IBB registered successfully, lab_vreg enable=%d ibb_vreg enable=%d swire_control=%d\n",
 						labibb->lab_vreg.vreg_enabled,
 						labibb->ibb_vreg.vreg_enabled,

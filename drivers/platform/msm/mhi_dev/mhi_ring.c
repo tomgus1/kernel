@@ -265,10 +265,13 @@ int mhi_dev_process_ring(struct mhi_dev_ring *ring)
 EXPORT_SYMBOL(mhi_dev_process_ring);
 
 int mhi_dev_add_element(struct mhi_dev_ring *ring,
-				union mhi_dev_ring_element_type *element)
+				union mhi_dev_ring_element_type *element,
+				struct event_req *ereq, int size)
 {
 	uint32_t old_offset = 0;
 	struct mhi_addr host_addr;
+	uint32_t num_elem = 1;
+	uint32_t num_free_elem;
 
 	if (!ring || !element) {
 		pr_err("%s: Invalid context\n", __func__);
@@ -277,14 +280,29 @@ int mhi_dev_add_element(struct mhi_dev_ring *ring,
 
 	mhi_dev_update_wr_offset(ring);
 
-	if ((ring->rd_offset + 1) % ring->ring_size == ring->wr_offset) {
-		mhi_log(MHI_MSG_INFO, "ring full to insert element\n");
+	if (ereq)
+		num_elem = size / (sizeof(union mhi_dev_ring_element_type));
+
+	if (ring->rd_offset < ring->wr_offset)
+		num_free_elem = ring->wr_offset - ring->rd_offset - 1;
+	else
+		num_free_elem = ring->ring_size - ring->rd_offset +
+				ring->wr_offset - 1;
+
+	if (num_free_elem < num_elem) {
+		mhi_log(MHI_MSG_ERROR, "No space to add %d elem in ring (%d)\n",
+			num_elem, ring->id);
 		return -EINVAL;
 	}
 
 	old_offset = ring->rd_offset;
 
-	mhi_dev_ring_inc_index(ring, ring->rd_offset);
+	if (ereq) {
+		ring->rd_offset += num_elem;
+		if (ring->rd_offset >= ring->ring_size)
+			ring->rd_offset -= ring->ring_size;
+	} else
+		mhi_dev_ring_inc_index(ring, ring->rd_offset);
 
 	ring->ring_ctx->generic.rp = (ring->rd_offset *
 				sizeof(union mhi_dev_ring_element_type)) +
@@ -298,13 +316,47 @@ int mhi_dev_add_element(struct mhi_dev_ring *ring,
 	host_addr.device_va = ring->ring_shadow.device_va +
 			sizeof(union mhi_dev_ring_element_type) * old_offset;
 
-	mhi_log(MHI_MSG_ERROR, "adding element to ring (%d)\n", ring->id);
-	mhi_log(MHI_MSG_ERROR, "rd_ofset %d\n", ring->rd_offset);
-	mhi_log(MHI_MSG_ERROR, "type %d\n", element->generic.type);
+	if (!ereq) {
+		/* We're adding only a single ring element */
+		host_addr.virt_addr = element;
+		host_addr.size = sizeof(union mhi_dev_ring_element_type);
 
-	mhi_dev_write_to_host(&host_addr, element,
-			sizeof(union mhi_dev_ring_element_type), ring->mhi_dev);
+		mhi_log(MHI_MSG_VERBOSE, "adding element to ring (%d)\n",
+					ring->id);
+		mhi_log(MHI_MSG_VERBOSE, "rd_ofset %d\n", ring->rd_offset);
+		mhi_log(MHI_MSG_VERBOSE, "type %d\n", element->generic.type);
 
+		mhi_dev_write_to_host(ring->mhi_dev, &host_addr,
+			NULL, MHI_DEV_DMA_SYNC);
+		return 0;
+	}
+
+	/* Adding multiple ring elements */
+	if (ring->rd_offset == 0 || (ring->rd_offset > old_offset)) {
+		/* No wrap-around case */
+		host_addr.virt_addr = element;
+		host_addr.size = size;
+		mhi_dev_write_to_host(ring->mhi_dev, &host_addr,
+			ereq, MHI_DEV_DMA_ASYNC);
+	} else {
+		/* Wrap-around case - first chunk uses dma sync */
+		host_addr.virt_addr = element;
+		host_addr.size = (ring->ring_size - old_offset) *
+			sizeof(union mhi_dev_ring_element_type);
+		mhi_dev_write_to_host(ring->mhi_dev, &host_addr,
+			NULL, MHI_DEV_DMA_SYNC);
+
+		/* Copy remaining elements */
+		if (ring->mhi_dev->use_ipa)
+			host_addr.host_pa = ring->ring_shadow.host_pa;
+		else
+			host_addr.device_va = ring->ring_shadow.device_va;
+		host_addr.virt_addr = element + (ring->ring_size - old_offset);
+		host_addr.size = ring->rd_offset *
+			sizeof(union mhi_dev_ring_element_type);
+		mhi_dev_write_to_host(ring->mhi_dev, &host_addr,
+			ereq, MHI_DEV_DMA_ASYNC);
+	}
 	return 0;
 }
 EXPORT_SYMBOL(mhi_dev_add_element);

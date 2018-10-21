@@ -449,7 +449,37 @@ struct mdss_mdp_ctl_intfs_ops {
 
 	/* to update lineptr, [1..yres] - enable, 0 - disable */
 	int (*update_lineptr)(struct mdss_mdp_ctl *ctl, bool enable);
-	int (*avr_ctrl_fnc)(struct mdss_mdp_ctl *, bool enable);
+
+	/* to wait for vsync */
+	int (*wait_for_vsync_fnc)(struct mdss_mdp_ctl *ctl);
+};
+
+/* FRC info used for Deterministic Frame Rate Control */
+#define FRC_CADENCE_22_RATIO 2000000000u /* 30fps -> 60fps, 29.97 -> 59.94 */
+#define FRC_CADENCE_22_RATIO_LOW 1940000000u
+#define FRC_CADENCE_22_RATIO_HIGH 2060000000u
+
+#define FRC_CADENCE_23_RATIO 2500000000u /* 24fps -> 60fps, 23.976 -> 59.94 */
+#define FRC_CADENCE_23_RATIO_LOW 2450000000u
+#define FRC_CADENCE_23_RATIO_HIGH 2550000000u
+
+#define FRC_CADENCE_23223_RATIO 2400000000u /* 25fps -> 60fps */
+#define FRC_CADENCE_23223_RATIO_LOW 2360000000u
+#define FRC_CADENCE_23223_RATIO_HIGH 2440000000u
+
+#define FRC_VIDEO_TS_DELTA_THRESHOLD_US (16666 * 10) /* 10 frames at 60fps */
+
+/*
+ * In current FRC design, the minimum video fps change we can support is 24fps
+ * to 25fps, so the timestamp delta per frame is 1667. Use this threshold to
+ * catch this case and ignore more trivial video fps variations.
+ */
+#define FRC_VIDEO_FPS_CHANGE_THRESHOLD_US 1667
+
+/* how many samples we need for video
+ * fps calculation
+ */
+#define FRC_VIDEO_FPS_DETECT_WINDOW 32
 
 	/* to wait for vsync */
 	int (*wait_for_vsync_fnc)(struct mdss_mdp_ctl *ctl);
@@ -585,9 +615,9 @@ struct mdss_mdp_ctl {
 
 	/* dynamic resolution switch during cont-splash handoff */
 	bool switch_with_handoff;
-	struct mdss_mdp_avr_info avr_info;
-	bool commit_in_progress;
-	struct mutex ds_lock;
+
+	/* vsync handler for FRC */
+	struct mdss_mdp_vsync_handler frc_vsync_handler;
 	bool need_vsync_on;
 };
 
@@ -995,8 +1025,6 @@ struct mdss_overlay_private {
 	struct kthread_worker worker;
 	struct kthread_work vsync_work;
 	struct task_struct *thread;
-
-	u8 secure_transition_state;
 
 	bool cache_null_commit; /* Cache if preceding commit was NULL */
 };
@@ -1770,7 +1798,7 @@ int mdss_mdp_ctl_start(struct mdss_mdp_ctl *ctl, bool handoff);
 int mdss_mdp_ctl_stop(struct mdss_mdp_ctl *ctl, int panel_power_mode);
 int mdss_mdp_ctl_intf_event(struct mdss_mdp_ctl *ctl, int event, void *arg,
 	u32 flags);
-int mdss_mdp_get_prefetch_lines(struct mdss_panel_info *pinfo);
+int mdss_mdp_get_prefetch_lines(struct mdss_panel_info *pinfo, bool is_fixed);
 int mdss_mdp_perf_bw_check(struct mdss_mdp_ctl *ctl,
 		struct mdss_mdp_pipe **left_plist, int left_cnt,
 		struct mdss_mdp_pipe **right_plist, int right_cnt);

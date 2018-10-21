@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -62,41 +62,22 @@
 #endif
 
 static int restart_mode;
-static void __iomem *restart_reason;
+static void *restart_reason;
 static bool scm_pmic_arbiter_disable_supported;
 static bool scm_deassert_ps_hold_supported;
 /* Download mode master kill-switch */
 static void __iomem *msm_ps_hold;
 static phys_addr_t tcsr_boot_misc_detect;
-static int download_mode;
+static void scm_disable_sdi(void);
 
-static int in_panic;
-static int panic_prep_restart(struct notifier_block *this,
-			      unsigned long event, void *ptr)
-{
-	in_panic = 1;
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block panic_blk = {
-	.notifier_call	= panic_prep_restart,
-};
-
-#ifdef CONFIG_RANDOMIZE_BASE
-
-/* interface for exporting attributes */
-struct reset_attribute {
-	struct attribute        attr;
-	ssize_t (*show)(struct kobject *kobj, struct attribute *attr,
-			char *buf);
-	size_t (*store)(struct kobject *kobj, struct attribute *attr,
-			const char *buf, size_t count);
-};
-#define to_reset_attr(_attr) \
-	container_of(_attr, struct reset_attribute, attr)
-#define RESET_ATTR(_name, _mode, _show, _store)	\
-	static struct reset_attribute reset_attr_##_name = \
-			__ATTR(_name, _mode, _show, _store)
+#ifdef CONFIG_QCOM_DLOAD_MODE
+/* Runtime could be only changed value once.
+ * There is no API from TZ to re-enable the registers.
+ * So the SDI cannot be re-enabled when it already by-passed.
+ */
+static int download_mode = 1;
+#else
+static const int download_mode;
 #endif
 
 #ifdef CONFIG_QCOM_DLOAD_MODE
@@ -116,6 +97,8 @@ static void *emergency_dload_mode_addr;
 static void *kaslr_imem_addr;
 #endif
 static bool scm_dload_supported;
+static struct kobject dload_kobj;
+static void *dload_type_addr;
 
 static int dload_set(const char *val, const struct kernel_param *kp);
 
@@ -215,8 +198,7 @@ static int dload_set(const char *val, const struct kernel_param *kp)
 #else
 static void set_dload_mode(int on)
 {
-	if (tcsr_boot_misc_detect)
-		scm_io_write(tcsr_boot_misc_detect, 0);
+	return;
 }
 
 static void enable_emergency_dload_mode(void)
@@ -229,6 +211,26 @@ static bool get_dload_mode(void)
 	return false;
 }
 #endif
+
+static void scm_disable_sdi(void)
+{
+	int ret;
+	struct scm_desc desc = {
+		.args[0] = 1,
+		.args[1] = 0,
+		.arginfo = SCM_ARGS(2),
+	};
+
+	/* Needed to bypass debug image on some chips */
+	if (!is_scm_armv8())
+		ret = scm_call_atomic2(SCM_SVC_BOOT,
+			       SCM_WDOG_DEBUG_BOOT_PART, 1, 0);
+	else
+		ret = scm_call2_atomic(SCM_SIP_FNID(SCM_SVC_BOOT,
+			  SCM_WDOG_DEBUG_BOOT_PART), &desc);
+	if (ret)
+		pr_err("Failed to disable secure wdog debug: %d\n", ret);
+}
 
 void msm_set_restart_mode(int mode)
 {
@@ -437,13 +439,6 @@ static void deassert_ps_hold(void)
 
 static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 {
-	int ret;
-	struct scm_desc desc = {
-		.args[0] = 1,
-		.args[1] = 0,
-		.arginfo = SCM_ARGS(2),
-	};
-
 	pr_notice("Going down for restart now\n");
 
 	msm_restart_prepare(cmd);
@@ -458,16 +453,7 @@ static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 		msm_trigger_wdog_bite();
 #endif
 
-	/* Needed to bypass debug image on some chips */
-	if (!is_scm_armv8())
-		ret = scm_call_atomic2(SCM_SVC_BOOT,
-			       SCM_WDOG_DEBUG_BOOT_PART, 1, 0);
-	else
-		ret = scm_call2_atomic(SCM_SIP_FNID(SCM_SVC_BOOT,
-			  SCM_WDOG_DEBUG_BOOT_PART), &desc);
-	if (ret)
-		pr_err("Failed to disable secure wdog debug: %d\n", ret);
-
+	scm_disable_sdi();
 	halt_spmi_pmic_arbiter();
 	deassert_ps_hold();
 
@@ -476,30 +462,11 @@ static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 
 static void do_msm_poweroff(void)
 {
-	int ret;
-	struct scm_desc desc = {
-		.args[0] = 1,
-		.args[1] = 0,
-		.arginfo = SCM_ARGS(2),
-	};
-
 	pr_notice("Powering off the SoC\n");
-#ifdef CONFIG_QCOM_DLOAD_MODE
+
 	set_dload_mode(0);
-#endif
+	scm_disable_sdi();
 	qpnp_pon_system_pwr_off(PON_POWER_OFF_SHUTDOWN);
-#ifdef TARGET_SOMC_XBOOT
-	qpnp_pon_set_restart_reason(PON_RESTART_REASON_NONE);
-#endif
-	/* Needed to bypass debug image on some chips */
-	if (!is_scm_armv8())
-		ret = scm_call_atomic2(SCM_SVC_BOOT,
-			       SCM_WDOG_DEBUG_BOOT_PART, 1, 0);
-	else
-		ret = scm_call2_atomic(SCM_SIP_FNID(SCM_SVC_BOOT,
-			  SCM_WDOG_DEBUG_BOOT_PART), &desc);
-	if (ret)
-		pr_err("Failed to disable wdog debug: %d\n", ret);
 
 	halt_spmi_pmic_arbiter();
 	deassert_ps_hold();
@@ -508,7 +475,7 @@ static void do_msm_poweroff(void)
 	pr_err("Powering off has failed\n");
 }
 
-#if defined(CONFIG_RANDOMIZE_BASE) && defined(CONFIG_QCOM_DLOAD_MODE)
+#ifdef CONFIG_QCOM_DLOAD_MODE
 static ssize_t attr_show(struct kobject *kobj, struct attribute *attr,
 				char *buf)
 {
@@ -639,20 +606,7 @@ static struct attribute *reset_attrs[] = {
 static struct attribute_group reset_attr_group = {
 	.attrs = reset_attrs,
 };
-#endif /* CONFIG_RANDOMIZE_BASE */
-
-static int msm_reboot_call(struct notifier_block *this,
-			   unsigned long code, void *_cmd)
-{
-	if (code == SYS_DOWN)
-		disable_nonboot_cpus();
-
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block msm_reboot_notifier = {
-	.notifier_call = msm_reboot_call,
-};
+#endif
 
 static int msm_restart_probe(struct platform_device *pdev)
 {
@@ -770,6 +724,8 @@ skip_sysfs_create:
 		scm_deassert_ps_hold_supported = true;
 
 	set_dload_mode(download_mode);
+	if (!download_mode)
+		scm_disable_sdi();
 
 	qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
 

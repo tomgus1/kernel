@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -779,8 +779,8 @@ static int msm_rpm_read_sleep_ack(void)
 
 		ret = msm_rpm_read_smd_data(buf);
 		if (!ret) {
-			/*
-			 * Mimic Glink behavior to ensure that the
+
+			/* Mimic Glink behavior to ensure that the
 			 * data is read and the msg is removed from
 			 * the wait list. We should have gotten here
 			 * only when there are no drivers waiting on
@@ -2191,6 +2191,7 @@ static struct platform_driver msm_rpm_device_driver = {
 	.driver = {
 		.name = "rpm-smd",
 		.owner = THIS_MODULE,
+		.suppress_bind_attrs = true,
 		.of_match_table = msm_rpm_match_table,
 	},
 };

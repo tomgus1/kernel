@@ -312,8 +312,8 @@ struct msm_fb_data_type {
 	u32 calib_mode;
 	u32 calib_mode_bl;
 	u32 ad_bl_level;
-	u32 bl_level;
-	int bl_extn_level;
+	u64 bl_level;
+	u64 bl_extn_level;
 	u32 bl_scale;
 	u32 unset_bl_level;
 	bool allow_bl_update;

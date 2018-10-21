@@ -406,7 +406,7 @@ static void mdss_mdp_cmd_wait4_autorefresh_pp(struct mdss_mdp_ctl *ctl)
 		return;
 	}
 
-	if ((line_out < ctl->mixer_left->roi.h) && (line_out)) {
+	if (line_out < ctl->mixer_left->roi.h) {
 		reinit_completion(&ctx->autorefresh_ppdone);
 
 		/* enable ping pong done */
@@ -468,23 +468,23 @@ static inline void __enable_rd_ptr_from_te(char __iomem *pingpong_base)
 }
 
 /*
-* __disable_autorefresh - disables autorefresh feature in the hw.
-*
-* To disable autorefresh, driver needs to make sure no transactions are
-* on-going; for ensuring this, driver must:
-*
-* 1. Disable listening to the external TE (this gives extra time before
-*     trigger next transaction).
-* 2. Wait for any on-going transaction (wait for ping pong done interrupt).
-* 3. Disable auto-refresh.
-* 4. Re-enable listening to the external panel TE.
-*
-* So it is responsability of the caller of this function to only call to disable
-* autorefresh if no hw transaction is on-going (wait for ping pong) and if
-* the listening for the external TE is disabled in the tear check logic (this
-* to prevent any race conditions with the hw), as mentioned in the above
-* steps.
-*/
+ * __disable_autorefresh - disables autorefresh feature in the hw.
+ *
+ * To disable autorefresh, driver needs to make sure no transactions are
+ * on-going; for ensuring this, driver must:
+ *
+ * 1. Disable listening to the external TE (this gives extra time before
+ *     trigger next transaction).
+ * 2. Wait for any on-going transaction (wait for ping pong done interrupt).
+ * 3. Disable auto-refresh.
+ * 4. Re-enable listening to the external panel TE.
+ *
+ * So it is responsability of the caller of this function to only call to
+ * disable autorefresh if no hw transaction is on-going (wait for ping pong)
+ * and if the listening for the external TE is disabled in the tear
+ * check logic (this to prevent any race conditions with the hw), as mentioned
+ * in the above steps.
+ */
 static inline void __disable_autorefresh(char __iomem *pingpong_base)
 {
 	mdss_mdp_pingpong_write(pingpong_base,
@@ -697,7 +697,9 @@ int mdss_mdp_get_split_display_ctls(struct mdss_mdp_ctl **ctl,
 				 */
 				pr_err("%s cannot find master ctl\n",
 					__func__);
-				BUG();
+				WARN_ON(1);
+				rc = -EINVAL;
+				goto exit;
 			}
 			/*
 			 * We have both controllers but sctl has the Master,
@@ -709,6 +711,7 @@ int mdss_mdp_get_split_display_ctls(struct mdss_mdp_ctl **ctl,
 			swap(*ctl, *sctl);
 		}
 	} else {
+		rc = -EINVAL;
 		pr_debug("%s no split mode:%d\n", __func__,
 			(*ctl)->mfd->split_mode);
 	}
@@ -1690,6 +1693,11 @@ static void clk_ctrl_delayed_off_work(struct work_struct *work)
 
 		/* re-assign to have the correct order in the context */
 		ctx = (struct mdss_mdp_cmd_ctx *) ctl->intf_ctx[MASTER_CTX];
+		if (!sctl) {
+			pr_err("invalid sctl\n");
+			goto exit;
+		}
+
 		sctx = (struct mdss_mdp_cmd_ctx *) sctl->intf_ctx[MASTER_CTX];
 		if (!ctx || !sctx) {
 			pr_err("invalid %s %s\n",
@@ -1797,6 +1805,11 @@ static void clk_ctrl_gate_work(struct work_struct *work)
 
 		/* re-assign to have the correct order in the context */
 		ctx = (struct mdss_mdp_cmd_ctx *) ctl->intf_ctx[MASTER_CTX];
+		if (!sctl) {
+			pr_err("invalid sctl\n");
+			goto exit;
+		}
+
 		sctx = (struct mdss_mdp_cmd_ctx *) sctl->intf_ctx[MASTER_CTX];
 		if (!ctx || !sctx) {
 			pr_err("%s ERROR invalid %s %s\n", __func__,
@@ -2172,10 +2185,6 @@ static int mdss_mdp_cmd_wait4pingpong(struct mdss_mdp_ctl *ctl, void *arg)
 			mdss_fb_report_panel_dead(ctl->mfd);
 		} else if (ctx->pp_timeout_report_cnt == 0) {
 			MDSS_XLOG(0xbad);
-			MDSS_XLOG_TOUT_HANDLER("mdp", "dsi0_ctrl", "dsi0_phy",
-				"dsi1_ctrl", "dsi1_phy", "vbif", "vbif_nrt",
-				"dbg_bus", "vbif_dbg_bus",
-				"dsi_dbg_bus", "panic");
 		} else if (ctx->pp_timeout_report_cnt == MAX_RECOVERY_TRIALS) {
 			MDSS_XLOG(0xbad2);
 			MDSS_XLOG_TOUT_HANDLER("mdp", "dsi0_ctrl", "dsi0_phy",
@@ -2256,9 +2265,9 @@ static void mdss_mdp_cmd_dsc_reconfig(struct mdss_mdp_ctl *ctl)
 	pinfo = &ctl->panel_data->panel_info;
 	if (pinfo->compression_mode != COMPRESSION_DSC) {
 		/*
-		* Check for a dynamic resolution switch from DSC On to
-		* DSC Off and call mdss_mdp_ctl_dsc_setup to disable DSC
-		*/
+		 * Check for a dynamic resolution switch from DSC On to
+		 * DSC Off and call mdss_mdp_ctl_dsc_setup to disable DSC
+		 */
 		if (ctl->pending_mode_switch == SWITCH_RESOLUTION) {
 			if (ctl->mixer_left && ctl->mixer_left->dsc_enabled)
 				changed = true;
@@ -2990,14 +2999,14 @@ static void __mdss_mdp_kickoff(struct mdss_mdp_ctl *ctl,
 	}
 }
 
-int mdss_mdp_cmd_wait4_vsync(struct mdss_mdp_ctl *ctl)
+static int mdss_mdp_cmd_wait4_vsync(struct mdss_mdp_ctl *ctl)
 {
 	int rc = 0;
 	struct mdss_mdp_cmd_ctx *ctx = ctl->intf_ctx[MASTER_CTX];
 
 	if (!ctx) {
 		pr_err("invalid context to wait for vsync\n");
-		return rc;
+		return -ENODEV;
 	}
 
 	atomic_inc(&ctx->rdptr_cnt);
@@ -3023,7 +3032,6 @@ int mdss_mdp_cmd_wait4_vsync(struct mdss_mdp_ctl *ctl)
 
 	return rc;
 }
-
 
 /*
  * There are 3 partial update possibilities
@@ -3464,11 +3472,6 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl, int panel_power_state)
 			mdss_mdp_ctl_intf_event(ctl,
 				MDSS_EVENT_REGISTER_MDP_CALLBACK,
 				(void *)&ctx->intf_mdp_callback,
-				CTL_INTF_EVENT_FLAG_DEFAULT);
-
-			mdss_mdp_ctl_intf_event(ctl,
-				MDSS_EVENT_REGISTER_CLAMP_HANDLER,
-				(void *)&ctx->intf_clamp_handler,
 				CTL_INTF_EVENT_FLAG_DEFAULT);
 
 			mdss_mdp_tearcheck_enable(ctl, true);
@@ -3962,7 +3965,6 @@ int mdss_mdp_cmd_start(struct mdss_mdp_ctl *ctl)
 	ctl->ops.reconfigure = mdss_mdp_cmd_reconfigure;
 	ctl->ops.pre_programming = mdss_mdp_cmd_pre_programming;
 	ctl->ops.update_lineptr = mdss_mdp_cmd_update_lineptr;
-	ctl->ops.panel_disable_cfg = mdss_mdp_cmd_panel_disable_cfg;
 	ctl->ops.wait_for_vsync_fnc = mdss_mdp_cmd_wait4_vsync;
 	pr_debug("%s:-\n", __func__);
 

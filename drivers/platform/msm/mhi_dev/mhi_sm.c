@@ -397,15 +397,19 @@ static bool mhi_sm_is_legal_pcie_event_on_state(enum mhi_dev_state curr_mstate,
 		res = true;
 		break;
 	case EP_PCIE_EVENT_PM_D3_HOT:
-		res = (curr_mstate == MHI_DEV_M3_STATE &&
+		res = ((curr_mstate == MHI_DEV_M3_STATE ||
+			curr_mstate == MHI_DEV_READY_STATE ||
+			curr_mstate == MHI_DEV_RESET_STATE) &&
 			curr_dstate != MHI_SM_EP_PCIE_LINK_DISABLE);
 		break;
 	case EP_PCIE_EVENT_PM_D3_COLD:
 		res = (curr_dstate == MHI_SM_EP_PCIE_D3_HOT_STATE ||
-			curr_dstate == MHI_SM_EP_PCIE_D3_COLD_STATE);
+			curr_dstate == MHI_SM_EP_PCIE_D3_COLD_STATE ||
+			curr_dstate == MHI_SM_EP_PCIE_D0_STATE);
 		break;
 	case EP_PCIE_EVENT_PM_RST_DEAST:
 		res = (curr_dstate == MHI_SM_EP_PCIE_D0_STATE ||
+			curr_dstate == MHI_SM_EP_PCIE_D3_HOT_STATE ||
 			curr_dstate == MHI_SM_EP_PCIE_D3_COLD_STATE);
 		break;
 	case EP_PCIE_EVENT_PM_D0:
@@ -1136,6 +1140,16 @@ void mhi_dev_sm_pcie_handler(struct ep_pcie_notify *notify)
 		break;
 	case EP_PCIE_EVENT_PM_D3_HOT:
 		mhi_sm_ctx->stats.d3_hot_event_cnt++;
+
+		spin_lock_irqsave(&mhi_sm_ctx->mhi_dev->lock, flags);
+		if ((mhi_sm_ctx->mhi_dev->mhi_int) &&
+				(mhi_sm_ctx->mhi_dev->mhi_int_en)) {
+			disable_irq_nosync(mhi_sm_ctx->mhi_dev->mhi_irq);
+			mhi_sm_ctx->mhi_dev->mhi_int_en = false;
+			MHI_SM_DBG("Disable MHI IRQ during D3 HOT");
+		}
+		spin_unlock_irqrestore(&mhi_sm_ctx->mhi_dev->lock, flags);
+
 		mhi_dev_backup_mmio(mhi_sm_ctx->mhi_dev);
 		break;
 	case EP_PCIE_EVENT_PM_RST_DEAST:

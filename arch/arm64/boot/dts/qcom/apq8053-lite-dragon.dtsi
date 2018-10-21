@@ -16,6 +16,7 @@
 #include "apq8053-camera-sensor-dragon.dtsi"
 #include "pmi8950.dtsi"
 #include "msm8953-pmi8950.dtsi"
+#include "apq8053-dragon-memory.dtsi"
 
 &soc {
 	vreg_5p0: vreg_5p0 {
@@ -99,17 +100,66 @@
 	cdc_quat_mi2s_gpios: msm_cdc_pinctrl_quat {
 		compatible = "qcom,msm-cdc-pinctrl";
 		pinctrl-names = "aud_active", "aud_sleep";
-		pinctrl-0 = <&sec_tlmm_lines_act>;
-		pinctrl-1 = <&sec_tlmm_lines_sus>;
+		pinctrl-0 = <&sec_tlmm_lines_act &ext_amp_ctrl_active>;
+		pinctrl-1 = <&sec_tlmm_lines_sus &ext_amp_ctrl_sleep>;
 	};
 
+	gpio_keys {
+		compatible = "gpio-keys";
+		input-name = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gpio_key_active>;
+		vol_up {
+			label = "volume_up";
+			gpios = <&tlmm 85 0x1>;
+			linux,input-type = <1>;
+			linux,code = <115>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			gpio-key,wakeup;
+		};
+	};
+
+	qcom,rmnet-ipa {
+		status = "disabled";
+	};
+
+	qcom,qca402x {
+		compatible = "qcom,qca402";
+		endpoints = <1>;
+	};
+};
+
+&cdc_pdm_comp_lines_act {
+	mux {
+		pins = "gpio67";
+		function = "cdc_pdm0";
+	};
+
+	config {
+		pins = "gpio67";
+		drive-strength = <8>;
+	};
+};
+
+&cdc_pdm_comp_lines_sus {
+	mux {
+		pins = "gpio67";
+		function = "cdc_pdm0";
+	};
+
+	config {
+		pins = "gpio67";
+		drive-strength = <2>;
+		bias-disable;
+	};
 };
 
 &firmware {
 	android {
 		vbmeta {
 			compatible = "android,vbmeta";
-			parts = "vbmeta,boot,system,vendor,bluetooth,modem,oem";
+			parts = "vbmeta,boot,system,vendor,bluetooth,modem,dsp,oem";
 		};
 		fstab {
 			/delete-node/ system;
@@ -319,7 +369,7 @@
 			pins = "gpio75";
 			drive-strength = <10>;
 			bias-pull-up;
-			output-low;
+			output-high;
 		};
 	};
 	sdc2_wlan_gpio_off: sdc2_wlan_gpio_off {
@@ -358,14 +408,6 @@
 };
 
 &spmi_bus {
-	qcom,pm8953@0 {
-		qcom,power-on@800 {
-			qcom,resin-gpiobase = <1019>;
-			qcom,pon_2 {
-				/delete-property/ linux,code;
-			};
-		};
-	};
 	qcom,pmi8950@2 {
 		qcom,leds@a100 {
 			compatible = "qcom,leds-qpnp";
@@ -424,7 +466,6 @@
 
 &pmi_haptic{
 	status = "disabled";
-	qcom,actuator-type = "lra";
 	qcom,lra-auto-res-mode="qwd";
 	qcom,lra-high-z="opt1";
 	qcom,lra-res-cal-period = <0>;
@@ -494,4 +535,12 @@
 		bias-disable = <0>; /* no pull */
 		status = "okay";
 	};
+};
+
+&ipa_hw {
+	status = "disabled";
+};
+
+&msm_gpu {
+	/delete-node/ qcom,gpu-mempools;
 };

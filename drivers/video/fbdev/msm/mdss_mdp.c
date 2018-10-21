@@ -1274,10 +1274,10 @@ void mdss_mdp_set_clk_rate(unsigned long rate, bool locked)
 		curr_clk_rate = clk_get_rate(clk);
 		if (IS_ERR_VALUE((unsigned long)clk_rate)) {
 			pr_err("unable to round rate err=%ld\n", clk_rate);
-		} else if (clk_rate != curr_clk_rate) {
-			mdss_mdp_cxipeak_vote(true, clk_rate, curr_clk_rate);
+		} else if (clk_rate != clk_get_rate(clk)) {
 			mdata->mdp_clk_rate = clk_rate;
-			if (IS_ERR_VALUE((unsigned long)clk_set_rate(clk, clk_rate))) {
+			if (IS_ERR_VALUE(
+				(unsigned long)clk_set_rate(clk, clk_rate)))
 				pr_err("clk_set_rate failed\n");
 			} else {
 				mdss_mdp_cxipeak_vote(false, clk_rate,
@@ -1421,9 +1421,6 @@ static void __mdss_mdp_clk_control(struct mdss_data_type *mdata, bool enable)
 		mdss_mdp_clk_update(MDSS_CLK_AXI, 1);
 		mdss_mdp_clk_update(MDSS_CLK_MDP_CORE, 1);
 		mdss_mdp_clk_update(MDSS_CLK_MDP_LUT, 1);
-		mdss_mdp_clk_update(MDSS_CLK_MDP_TBU, 1);
-		mdss_mdp_clk_update(MDSS_CLK_MDP_TBU_RT, 1);
-		mdss_mdp_clk_update(MDSS_CLK_THROTTLE_AXI, 1);
 		if (mdata->vsync_ena)
 			mdss_mdp_clk_update(MDSS_CLK_MDP_VSYNC, 1);
 	} else {
@@ -1434,14 +1431,11 @@ static void __mdss_mdp_clk_control(struct mdss_data_type *mdata, bool enable)
 		if (mdata->vsync_ena)
 			mdss_mdp_clk_update(MDSS_CLK_MDP_VSYNC, 0);
 
-		mdss_mdp_clk_update(MDSS_CLK_MDP_TBU_RT, 0);
-		mdss_mdp_clk_update(MDSS_CLK_MDP_TBU, 0);
 		mdss_mdp_clk_update(MDSS_CLK_MDP_LUT, 0);
 		mdss_mdp_clk_update(MDSS_CLK_MDP_CORE, 0);
 		mdss_mdp_clk_update(MDSS_CLK_AXI, 0);
 		mdss_mdp_clk_update(MDSS_CLK_AHB, 0);
 		mdss_mdp_clk_update(MDSS_CLK_MNOC_AHB, 0);
-		mdss_mdp_clk_update(MDSS_CLK_THROTTLE_AXI, 0);
 
 		/* release iommu control */
 		mdss_iommu_ctrl(0);
@@ -1564,9 +1558,8 @@ static void mdss_mdp_memory_retention_ctrl(bool mem_ctrl, bool periph_ctrl)
 {
 	struct clk *mdss_mdp_clk = NULL;
 	struct clk *mdp_vote_clk = mdss_mdp_get_clk(MDSS_CLK_MDP_CORE);
-	struct clk *mdss_mdp_lut_clk = NULL;
-	struct clk *mdp_lut_vote_clk = mdss_mdp_get_clk(MDSS_CLK_MDP_LUT);
 	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
+	struct clk *mdss_mdp_lut_clk = NULL;
 
 	if (mdp_vote_clk) {
 		if (test_bit(MDSS_CAPS_MDP_VOTE_CLK_NOT_SUPPORTED,
@@ -1576,6 +1569,22 @@ static void mdss_mdp_memory_retention_ctrl(bool mem_ctrl, bool periph_ctrl)
 		} else {
 			mdss_mdp_clk = clk_get_parent(mdp_vote_clk);
 			mdss_mdp_lut_clk = clk_get_parent(mdp_lut_vote_clk);
+		}
+	}
+
+	__mdss_mdp_reg_access_clk_enable(mdata, true);
+	if (mdss_mdp_clk) {
+		if (mem_ctrl)
+			clk_set_flags(mdss_mdp_clk, CLKFLAG_RETAIN_MEM);
+		else
+			clk_set_flags(mdss_mdp_clk, CLKFLAG_NORETAIN_MEM);
+
+		if (periph_ctrl) {
+			clk_set_flags(mdss_mdp_clk, CLKFLAG_RETAIN_PERIPH);
+			clk_set_flags(mdss_mdp_clk, CLKFLAG_PERIPH_OFF_CLEAR);
+		} else {
+			clk_set_flags(mdss_mdp_clk, CLKFLAG_PERIPH_OFF_SET);
+			clk_set_flags(mdss_mdp_clk, CLKFLAG_NORETAIN_PERIPH);
 		}
 	}
 
@@ -2209,58 +2218,8 @@ static void mdss_mdp_hw_rev_caps_init(struct mdss_data_type *mdata)
 		mdss_mdp_init_default_prefill_factors(mdata);
 		mdss_set_quirk(mdata, MDSS_QUIRK_DSC_RIGHT_ONLY_PU);
 		mdss_set_quirk(mdata, MDSS_QUIRK_DSC_2SLICE_PU_THRPUT);
-		mdss_set_quirk(mdata, MDSS_QUIRK_MMSS_GDSC_COLLAPSE);
+		mdss_set_quirk(mdata, MDSS_QUIRK_SRC_SPLIT_ALWAYS);
 		mdss_set_quirk(mdata, MDSS_QUIRK_MDP_CLK_SET_RATE);
-		mdata->has_wb_ubwc = true;
-		set_bit(MDSS_CAPS_10_BIT_SUPPORTED, mdata->mdss_caps_map);
-		set_bit(MDSS_CAPS_SEC_DETACH_SMMU, mdata->mdss_caps_map);
-		mdss_set_quirk(mdata, MDSS_QUIRK_HDR_SUPPORT_ENABLED);
-		break;
-	case MDSS_MDP_HW_REV_320:
-		mdss_set_quirk(mdata, MDSS_QUIRK_DSC_RIGHT_ONLY_PU);
-		mdss_set_quirk(mdata, MDSS_QUIRK_DSC_2SLICE_PU_THRPUT);
-	case MDSS_MDP_HW_REV_330:
-		mdata->max_target_zorder = 7; /* excluding base layer */
-		mdata->max_cursor_size = 512;
-		mdata->per_pipe_ib_factor.numer = 8;
-		mdata->per_pipe_ib_factor.denom = 5;
-		mdata->apply_post_scale_bytes = false;
-		mdata->hflip_buffer_reused = false;
-		mdata->min_prefill_lines = 25;
-		mdata->has_ubwc = true;
-		mdata->pixel_ram_size =
-			(mdata->mdp_rev == MDSS_MDP_HW_REV_320) ? 50 : 40;
-		mdata->pixel_ram_size *= 1024;
-		mdata->rects_per_sspp[MDSS_MDP_PIPE_TYPE_DMA] = 2;
-
-		mem_protect_sd_ctrl_id = MEM_PROTECT_SD_CTRL_SWITCH;
-		set_bit(MDSS_QOS_PER_PIPE_IB, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_REMAPPER, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_TS_PREFILL, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_OVERHEAD_FACTOR, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_CDP, mdata->mdss_qos_map); /* cdp supported */
-		mdata->enable_cdp = false; /* disable cdp */
-		set_bit(MDSS_QOS_OTLIM, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_PER_PIPE_LUT, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_SIMPLIFIED_PREFILL, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_TS_PREFILL, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_IB_NOCR, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_WB2_WRITE_GATHER_EN, mdata->mdss_qos_map);
-		set_bit(MDSS_QOS_WB_QOS, mdata->mdss_qos_map);
-		set_bit(MDSS_CAPS_CWB_SUPPORTED, mdata->mdss_caps_map);
-		set_bit(MDSS_CAPS_YUV_CONFIG, mdata->mdss_caps_map);
-		set_bit(MDSS_CAPS_SCM_RESTORE_NOT_REQUIRED,
-			mdata->mdss_caps_map);
-		set_bit(MDSS_CAPS_3D_MUX_UNDERRUN_RECOVERY_SUPPORTED,
-			mdata->mdss_caps_map);
-		set_bit(MDSS_CAPS_QSEED3, mdata->mdss_caps_map);
-		set_bit(MDSS_CAPS_DEST_SCALER, mdata->mdss_caps_map);
-		set_bit(MDSS_CAPS_MDP_VOTE_CLK_NOT_SUPPORTED,
-			mdata->mdss_caps_map);
-		mdss_mdp_init_default_prefill_factors(mdata);
-		mdss_set_quirk(mdata, MDSS_QUIRK_MMSS_GDSC_COLLAPSE);
-		mdss_set_quirk(mdata, MDSS_QUIRK_MDP_CLK_SET_RATE);
-		mdss_set_quirk(mdata, MDSS_QUIRK_DMA_BI_DIR);
 		mdata->has_wb_ubwc = true;
 		set_bit(MDSS_CAPS_10_BIT_SUPPORTED, mdata->mdss_caps_map);
 		set_bit(MDSS_CAPS_SEC_DETACH_SMMU, mdata->mdss_caps_map);
@@ -3147,6 +3106,8 @@ static int mdss_mdp_probe(struct platform_device *pdev)
 		MDSS_MDP_REG_DISP_INTF_SEL);
 	split_display = readl_relaxed(mdata->mdp_base +
 		MDSS_MDP_REG_SPLIT_DISPLAY_EN);
+	mdata->splash_intf_sel = intf_sel;
+	mdata->splash_split_disp = split_display;
 	if (intf_sel != 0) {
 		for (i = 0; i < 4; i++)
 			num_of_display_on += ((intf_sel >> i*8) & 0x000000FF);

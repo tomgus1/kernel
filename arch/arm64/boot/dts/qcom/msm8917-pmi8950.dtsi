@@ -16,9 +16,19 @@
 &qpnp_smbcharger {
 	qcom,chg-led-sw-controls;
 	qcom,chg-led-support;
-	/delete-property/ dpdm-supply;
+	dpdm-supply = <&usb_otg>;
 };
 
 &usb_otg {
 	extcon = <&qpnp_smbcharger>;
+};
+
+&labibb {
+	status = "ok";
+	qpnp,qpnp-labibb-mode = "lcd";
+};
+
+&mdss_dsi0 {
+	lab-supply = <&lab_regulator>;
+	ibb-supply = <&ibb_regulator>;
 };

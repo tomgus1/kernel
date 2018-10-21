@@ -76,6 +76,10 @@
 	};
 };
 
+&llcc {
+	compatible = "qcom,qcs605-llcc";
+};
+
 &ipa_hw {
 	status = "disabled";
 };
@@ -90,8 +94,8 @@
 	lmh-dcvs-00 {
 		trips {
 			active-config {
-				temperature = <105000>;
-				hysteresis = <40000>;
+				temperature = <100000>;
+				hysteresis = <35000>;
 			};
 		};
 	};
@@ -99,8 +103,16 @@
 	lmh-dcvs-01 {
 		trips {
 			active-config {
-				temperature = <105000>;
-				hysteresis = <40000>;
+				temperature = <100000>;
+				hysteresis = <35000>;
+			};
+		};
+	};
+
+	gpu-virt-max-step {
+		trips {
+			gpu-trip0 {
+				temperature = <100000>;
 			};
 		};
 	};

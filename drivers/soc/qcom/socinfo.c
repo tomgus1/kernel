@@ -634,24 +634,8 @@ static struct msm_soc_info cpu_of_id[] = {
 	[363] = {MSM_CPU_SDA439, "SDA439"},
 	[364] = {MSM_CPU_SDA429, "SDA429"},
 
-	/* Cobalt IDs */
-	[292] = {MSM_CPU_8998, "MSM8998"},
-	[319] = {MSM_CPU_8998, "APQ8098"},
-
-	/* 660 ID */
-	[317] = {MSM_CPU_660, "SDM660"},
-	[324] = {MSM_CPU_660, "SDA660"},
-	[325] = {MSM_CPU_660, "SDM658"},
-	[326] = {MSM_CPU_660, "SDA658"},
-
-	/* 630 ID */
-	[318] = {MSM_CPU_630, "SDM630"},
-	[327] = {MSM_CPU_630, "SDA630"},
-
-	/* 636 ID */
-	[345] = {MSM_CPU_636, "SDM636"},
-	[346] = {MSM_CPU_636, "SDA636"},
-
+	/* QM215 ID */
+	[386] = {MSM_CPU_QM215, "QM215"},
 
 	/* Uninitialized IDs are not known to run Linux.
 	 * MSM_CPU_UNKNOWN is set to 0 to ensure these IDs are
@@ -1667,6 +1651,10 @@ static void * __init setup_dummy_socinfo(void)
 	} else if (early_machine_is_mdm9607()) {
 		dummy_socinfo.id = 290;
 		strlcpy(dummy_socinfo.build_id, "mdm9607 - ",
+				sizeof(dummy_socinfo.build_id));
+	} else if (early_machine_is_qm215()) {
+		dummy_socinfo.id = 386;
+		strlcpy(dummy_socinfo.build_id, "qm215 - ",
 				sizeof(dummy_socinfo.build_id));
 	}
 

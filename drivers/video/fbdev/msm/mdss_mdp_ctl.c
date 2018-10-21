@@ -632,7 +632,7 @@ static inline bool __is_vert_downscaling(u32 src_h,
 static inline bool __is_bus_throughput_factor_required(u32 src_h,
 	struct mdss_rect dst)
 {
-	u32 scale_factor = src_h * 10;
+	u64 scale_factor = src_h * 10;
 
 	do_div(scale_factor, dst.h);
 	return (__is_vert_downscaling(src_h, dst) &&
@@ -1527,7 +1527,7 @@ static bool is_mdp_prefetch_needed(struct mdss_panel_info *pinfo)
  * the mdp fetch lines  as the last (25 - vbp - vpw) lines of vertical
  * front porch.
  */
-int mdss_mdp_get_prefetch_lines(struct mdss_panel_info *pinfo)
+int mdss_mdp_get_prefetch_lines(struct mdss_panel_info *pinfo, bool is_fixed)
 {
 	int prefetch_avail = 0;
 	int v_total, vfp_start;
@@ -1536,7 +1536,11 @@ int mdss_mdp_get_prefetch_lines(struct mdss_panel_info *pinfo)
 	if (!is_mdp_prefetch_needed(pinfo))
 		return 0;
 
-	v_total = mdss_panel_get_vtotal(pinfo);
+	if (is_fixed)
+		v_total = mdss_panel_get_vtotal_fixed(pinfo);
+	else
+		v_total = mdss_panel_get_vtotal(pinfo);
+
 	vfp_start = (pinfo->lcdc.v_back_porch + pinfo->lcdc.v_pulse_width +
 			pinfo->yres);
 
@@ -2575,7 +2579,7 @@ struct mdss_mdp_mixer *mdss_mdp_mixer_alloc(
 			mixer_pool += ctl->mdata->ndspp;
 			nmixers -= ctl->mdata->ndspp;
 		} else if ((ctl->panel_data->panel_info.is_pluggable) &&
-				nmixers_active) {
+				nmixers_active > 1) {
 			mixer_pool += ctl->mdata->ndspp;
 			nmixers -= ctl->mdata->ndspp;
 		}
@@ -3481,9 +3485,9 @@ void mdss_mdp_ctl_dsc_setup(struct mdss_mdp_ctl *ctl,
 	struct mdss_panel_info *spinfo;
 
 	/*
-	* Check for dynamic resolution switch from DSC On to DSC Off
-	* and disable DSC
-	*/
+	 * Check for dynamic resolution switch from DSC On to DSC Off
+	 * and disable DSC
+	 */
 	if ((ctl->pending_mode_switch == SWITCH_RESOLUTION) &&
 	    ctl->is_master &&
 	    (!is_dsc_compression(pinfo))) {
@@ -3928,9 +3932,9 @@ skip_intf_reconfig:
 		}
 
 		/*
-		* If we are transitioning from  DSC On + DSC Merge to DSC Off
-		* the 3D mux needs to be enabled
-		*/
+		 * If we are transitioning from  DSC On + DSC Merge to DSC Off
+		 * the 3D mux needs to be enabled
+		 */
 		if (!is_dsc_compression(&pdata->panel_info) &&
 		    ctl->mixer_left &&
 		    ctl->mixer_left->dsc_enabled &&
@@ -3940,9 +3944,9 @@ skip_intf_reconfig:
 		}
 
 		/*
-		* If we are transitioning from DSC Off to DSC On + DSC Merge
-		* the 3D mux needs to be disabled
-		*/
+		 * If we are transitioning from DSC Off to DSC On + DSC Merge
+		 * the 3D mux needs to be disabled
+		 */
 		if (is_dsc_compression(&pdata->panel_info) &&
 		    ctl->mixer_left &&
 		    !ctl->mixer_left->dsc_enabled &&
@@ -6139,13 +6143,13 @@ int mdss_mdp_display_commit(struct mdss_mdp_ctl *ctl, void *arg,
 
 	/* update backlight in commit */
 	if (ctl->intf_type == MDSS_INTF_DSI && !ctl->is_video_mode &&
-	    ctl->mfd && ctl->mfd->bl_extn_level >= 0) {
+			ctl->mfd && ctl->mfd->bl_extn_level > 0 &&
+			ctl->mfd->bl_extn_level != U64_MAX) {
 		if (!IS_CALIB_MODE_BL(ctl->mfd) && (!ctl->mfd->ext_bl_ctrl ||
 						!ctl->mfd->bl_level)) {
 			mutex_lock(&ctl->mfd->bl_lock);
 			mdss_fb_set_backlight(ctl->mfd,
 					      ctl->mfd->bl_extn_level);
-			ctl->mfd->bl_level_usr = ctl->mfd->bl_extn_level;
 			mutex_unlock(&ctl->mfd->bl_lock);
 		}
 	}

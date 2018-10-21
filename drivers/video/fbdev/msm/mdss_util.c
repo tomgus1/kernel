@@ -214,6 +214,19 @@ void mdss_disable_irq_wake(struct mdss_hw *hw)
 		pr_warn("MDSS HW ndx=%d is NOT set\n", hw->hw_ndx);
 }
 
+static bool check_display(char *param_string)
+{
+	char *str = NULL;
+	bool display_disable = false;
+
+	str = strnstr(param_string, ";", MDSS_MAX_PANEL_LEN);
+	if (!str)
+		return display_disable;
+
+	if (err)
+		pr_warn("MDSS HW ndx=%d is NOT set\n", hw->hw_ndx);
+}
+
 struct mdss_util_intf mdss_util = {
 	.register_irq = mdss_register_irq,
 	.enable_irq = mdss_enable_irq,
