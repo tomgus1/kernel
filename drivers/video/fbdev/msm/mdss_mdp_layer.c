@@ -989,16 +989,20 @@ static int __validate_layer_reconfig(struct mdp_input_layer *layer,
 	 * HW earlier to sdm 3.x.x does not support double buffer CSC.
 	 * Invalidate any reconfig of CSC block on staged pipe.
 	 */
-	if (!is_csc_db &&
-		((!!pipe->src_fmt->is_yuv != !!layer_src_fmt->is_yuv) ||
-		(pipe->src_fmt->is_yuv && layer_src_fmt->is_yuv &&
-		pipe->csc_coeff_set != layer->color_space))) {
-		pr_err("CSC reconfig not allowed on staged pipe\n");
-		status = -EINVAL;
-		goto err_exit;
+	if (pipe->csc_coeff_set != layer->color_space) {
+		src_fmt = mdss_mdp_get_format_params(layer->buffer.format);
+		if (!src_fmt) {
+			pr_err("Invalid layer format %d\n",
+						layer->buffer.format);
+			status = -EINVAL;
+		} else {
+			if (pipe->src_fmt->is_yuv && src_fmt &&
+							src_fmt->is_yuv) {
+				status = -EPERM;
+				pr_err("csc change is not permitted on used pipe\n");
+			}
+		}
 	}
-
-err_exit:
 	return status;
 }
 
@@ -1223,15 +1227,6 @@ static int __configure_pipe_params(struct msm_fb_data_type *mfd,
 	if (pipe->async_update && ((is_split_lm(mfd) && !mdata->has_src_split)
 			|| (!mdp5_data->ctl->is_video_mode))) {
 		pr_err("async update allowed only in video mode panel with src_split\n");
-		ret = -EINVAL;
-		goto end;
-	}
-
-	/* scaling is not allowed for solid_fill layers */
-	if ((pipe->flags & MDP_SOLID_FILL) &&
-		((pipe->src.w != pipe->dst.w) ||
-			(pipe->src.h != pipe->dst.h))) {
-		pr_err("solid fill pipe:%d cannot have scaling\n", pipe->num);
 		ret = -EINVAL;
 		goto end;
 	}
@@ -1854,29 +1849,33 @@ static int __validate_secure_session(struct mdss_overlay_private *mdp5_data)
 		return -EINVAL;
 	}
 
-	if (((sd_pipes) || (mdp5_data->ctl->is_video_mode &&
-		mdss_get_sd_client_cnt())) &&
-		(nonsd_pipes || secure_vid_pipes ||
-		secure_cam_pipes)) {
+	if (mdss_get_sd_client_cnt() && !mdp5_data->sd_enabled) {
+		pr_err("Secure session already enabled for other client\n");
+		return -EINVAL;
+	}
+
+	mdp5_data->sd_transition_state = SD_TRANSITION_NONE;
+	if (!__is_sd_state_valid(sd_pipes, nonsd_pipes, panel_type,
+		mdp5_data->sd_enabled)) {
 		pr_err("non-secure layer validation request during secure display session\n");
-		pr_err(" secure client cnt:%d secure pipe:%d non-secure pipe:%d, secure-vid:%d, secure-cam:%d\n",
-			mdss_get_sd_client_cnt(), sd_pipes, nonsd_pipes,
-			secure_vid_pipes, secure_cam_pipes);
-		return -EINVAL;
-	} else if (secure_cam_pipes && (secure_vid_pipes || sd_pipes)) {
-		pr_err(" incompatible layers during secure camera session\n");
-		pr_err("secure-camera cnt:%d secure video:%d secure display:%d\n",
-				secure_cam_pipes, secure_vid_pipes, sd_pipes);
-		return -EINVAL;
+		pr_err(" secure client cnt:%d secure pipe cnt:%d non-secure pipe cnt:%d\n",
+			mdss_get_sd_client_cnt(), sd_pipes, nonsd_pipes);
+		ret = -EINVAL;
+	} else if (!mdp5_data->sd_enabled && sd_pipes) {
+		mdp5_data->sd_transition_state =
+			SD_TRANSITION_NON_SECURE_TO_SECURE;
+	} else if (mdp5_data->sd_enabled && !sd_pipes) {
+		mdp5_data->sd_transition_state =
+			SD_TRANSITION_SECURE_TO_NON_SECURE;
 	} else if (mdp5_data->ctl->is_video_mode &&
 		((sd_pipes && !mdp5_data->sd_enabled) ||
 		(!sd_pipes && mdp5_data->sd_enabled)) &&
 		!mdp5_data->cache_null_commit) {
 		pr_err("NULL commit missing before display secure session entry/exit\n");
-		return -EINVAL;
+		ret = -EINVAL;
 	}
 
-	return 0;
+	return ret;
 }
 
 /*

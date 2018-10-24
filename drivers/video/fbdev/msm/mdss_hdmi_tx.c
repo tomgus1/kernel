@@ -66,7 +66,7 @@
 #define HDMI_TX_4_MAX_PCLK_RATE            600000
 
 #define hdmi_tx_get_fd(x) ((x && (ffs(x) > 0))  ? \
-			hdmi_ctrl->feature_data[ffs(x) - 1] : NULL)
+			hdmi_ctrl->feature_data[ffs(x) - 1] : 0)
 #define hdmi_tx_set_fd(x, y) {if (x && (ffs(x) > 0)) \
 			hdmi_ctrl->feature_data[ffs(x) - 1] = y; }
 
