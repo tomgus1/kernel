@@ -3195,6 +3195,17 @@ static int cam_icp_mgr_config_hw(void *hw_mgr_priv, void *config_hw_args)
 			CAM_ERR(CAM_ICP, "Fail to send reconfig io cmd");
 	}
 
+	CAM_DBG(CAM_ICP, "req_id %llu, io config %llu", req_id,
+		frame_info->io_config);
+
+	if (frame_info->io_config != 0) {
+		CAM_INFO(CAM_ICP, "Send recfg io");
+		rc = cam_icp_mgr_send_recfg_io(ctx_data,
+			&frame_info->hfi_cfg_io_cmd, req_id);
+		if (rc)
+			CAM_ERR(CAM_ICP, "Fail to send reconfig io cmd");
+	}
+
 	rc = cam_icp_mgr_enqueue_config(hw_mgr, config_args);
 	if (rc)
 		goto config_err;

@@ -79,6 +79,7 @@ int cam_sync_init_group_object(struct sync_table_row *table,
 	 * If any child state is ERROR or SUCCESS, it will not be added to list.
 	 */
 	for (i = 0; i < num_objs; i++) {
+		spin_lock_bh(&sync_dev->row_spinlocks[sync_objs[i]]);
 		child_row = table + sync_objs[i];
 		spin_lock_bh(&sync_dev->row_spinlocks[sync_objs[i]]);
 

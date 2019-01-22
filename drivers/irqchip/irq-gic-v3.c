@@ -233,9 +233,6 @@ void gic_v3_dist_save(void)
 	void __iomem *base = gic_data.dist_base;
 	int reg, i;
 
-	if (!base)
-		return;
-
 	bitmap_zero(irqs_restore, MAX_IRQ);
 
 	for (reg = SAVED_ICFGR; reg < NUM_SAVED_GICD_REGS; reg++) {

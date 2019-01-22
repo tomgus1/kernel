@@ -2565,6 +2565,25 @@ int mdss_mdp_overlay_kickoff(struct msm_fb_data_type *mfd,
 	if (ctl->ops.wait_pingpong && mdp5_data->mdata->serialize_wait4pp)
 		mdss_mdp_display_wait4pingpong(ctl, true);
 
+	mdp5_data->cache_null_commit = list_empty(&mdp5_data->pipes_used);
+	sd_transition_state = mdp5_data->sd_transition_state;
+	if (sd_transition_state != SD_TRANSITION_NONE) {
+		ret = __config_secure_display(mdp5_data);
+		if (IS_ERR_VALUE((unsigned long)ret)) {
+			pr_err("Secure session config failed\n");
+			goto commit_fail;
+		}
+	}
+
+	if (!data) {
+		atomic_inc(&mfd->mdp_sync_pt_data.commit_cnt);
+		MDSS_XLOG(atomic_read(&mfd->mdp_sync_pt_data.commit_cnt));
+	}
+
+	/*
+	 * Setup pipe in solid fill before unstaging,
+	 * to ensure no fetches are happening after dettach or reattach.
+	 */
 	list_for_each_entry_safe(pipe, tmp, &mdp5_data->pipes_cleanup, list) {
 		mdss_mdp_mixer_pipe_unstage(pipe, pipe->mixer_left);
 		mdss_mdp_mixer_pipe_unstage(pipe, pipe->mixer_right);

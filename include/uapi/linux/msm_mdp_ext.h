@@ -40,9 +40,9 @@
  * To allow proper structure padding for 64bit/32bit target
  */
 #ifdef __LP64
-#define MDP_LAYER_COMMIT_V1_PAD 2
+#define MDP_LAYER_COMMIT_V1_PAD 1
 #else
-#define MDP_LAYER_COMMIT_V1_PAD 3
+#define MDP_LAYER_COMMIT_V1_PAD 2
 #endif
 
 /**********************************************************************
@@ -162,9 +162,6 @@ VALIDATE/COMMIT FLAG CONFIGURATION
  * Default mode is continuous mode.
  */
 #define MDP_COMMIT_AVR_ONE_SHOT_MODE		0x10
-
-/* Flag to indicate dual partial ROI update */
-#define MDP_COMMIT_PARTIAL_UPDATE_DUAL_ROI	0x20
 
 /* Flag to update brightness when commit */
 #define MDP_COMMIT_UPDATE_BRIGHTNESS		0x40
@@ -582,6 +579,9 @@ struct mdp_layer_commit_v1 {
 	 * Represents number of Destination scaler data provied by userspace.
 	 */
 	uint32_t		dest_scaler_cnt;
+
+	/* Backlight level that would update when display commit */
+	uint32_t		bl_level;
 
 	/* Backlight level that would update when display commit */
 	uint32_t		bl_level;

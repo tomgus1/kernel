@@ -2010,7 +2010,7 @@ static int cam_ife_mgr_stop_hw(void *hw_mgr_priv, void *stop_hw_args)
 	cam_ife_mgr_csid_stop_hw(ctx, &ctx->res_list_ife_csid,
 		master_base_idx, CAM_CSID_HALT_AT_FRAME_BOUNDARY);
 
-	/* stop rest of the CSID paths  */
+	/* stop rest of the CIDs  */
 	for (i = 0; i < ctx->num_base; i++) {
 		if (ctx->base[i].idx == master_base_idx)
 			continue;

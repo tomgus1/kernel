@@ -69,11 +69,6 @@ static const struct of_device_id dsi_display_dt_match[] = {
 static struct dsi_display *primary_display;
 static struct dsi_display *secondary_display;
 
-struct dsi_display *dsi_display_get_main_display(void)
-{
-	return primary_display;
-}
-
 static void dsi_display_mask_ctrl_error_interrupts(struct dsi_display *display,
 			u32 mask, bool enable)
 {
@@ -4923,12 +4918,6 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 			primary_active_node = pdev->dev.of_node;
 		else
 			secondary_active_node = pdev->dev.of_node;
-
-#ifdef CONFIG_DRM_SDE_SPECIFIC_PANEL
-		if (display->panel->spec_pdata->oled_disp) {
-			dsi_panel_driver_oled_short_det_init_works(display);
-		}
-#endif /* CONFIG_DRM_SDE_SPECIFIC_PANEL */
 	}
 	return rc;
 }
