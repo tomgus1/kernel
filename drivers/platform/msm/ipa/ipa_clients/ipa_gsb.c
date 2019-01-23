@@ -160,6 +160,7 @@ struct ipa_gsb_context {
 	struct mutex iface_lock[MAX_SUPPORTED_IFACE];
 	spinlock_t iface_spinlock[MAX_SUPPORTED_IFACE];
 	u32 pm_hdl;
+	atomic_t disconnect_in_progress;
 };
 
 static struct ipa_gsb_context *ipa_gsb_ctx;
@@ -676,7 +677,7 @@ static void ipa_gsb_cons_cb(void *priv, enum ipa_dp_evt_type evt,
 
 	skb = (struct sk_buff *)data;
 
-	while (skb->len) {
+	while (skb && skb->len) {
 		mux_hdr = (struct ipa_gsb_mux_hdr *)skb->data;
 		pkt_size = mux_hdr->pkt_size;
 		/* 4-byte padding */
@@ -851,6 +852,7 @@ int ipa_bridge_connect(u32 hdl)
 		return 0;
 	}
 
+	mutex_lock(&ipa_gsb_ctx->lock);
 	if (ipa_gsb_ctx->num_connected_iface == 0) {
 		ret = ipa_pm_activate_sync(ipa_gsb_ctx->pm_hdl);
 		if (ret) {
@@ -876,7 +878,6 @@ int ipa_bridge_connect(u32 hdl)
 	ipa_gsb_ctx->num_resumed_iface++;
 	IPA_GSB_DBG("num resumed iface: %d\n",
 		ipa_gsb_ctx->num_resumed_iface);
-
 	mutex_unlock(&ipa_gsb_ctx->iface_lock[hdl]);
 	return 0;
 }
@@ -908,7 +909,7 @@ static int ipa_gsb_disconnect_sys_pipe(void)
 
 int ipa_bridge_disconnect(u32 hdl)
 {
-	int ret;
+	int ret = 0;
 
 	if (!ipa_gsb_ctx) {
 		IPA_GSB_ERR("ipa_gsb_ctx was not initialized\n");
@@ -935,6 +936,7 @@ int ipa_bridge_disconnect(u32 hdl)
 		return 0;
 	}
 
+	mutex_lock(&ipa_gsb_ctx->lock);
 	if (ipa_gsb_ctx->num_connected_iface == 1) {
 		ret = ipa_gsb_disconnect_sys_pipe();
 		if (ret) {

@@ -1875,7 +1875,15 @@ int mdp3_get_img(struct msmfb_data *img, struct mdp3_img_data *data, int client)
 				data->srcp_dma_buf = NULL;
 				return ret;
 			}
-
+			if (client == MDP3_CLIENT_SPI) {
+				data->srcp_ihdl = ion_import_dma_buf(iclient,
+					data->srcp_dma_buf);
+				if (IS_ERR_OR_NULL(data->srcp_ihdl)) {
+					pr_err("error on ion_import_fd\n");
+					data->srcp_ihdl = NULL;
+					return -EIO;
+				}
+			}
 			data->srcp_attachment =
 			mdss_smmu_dma_buf_attach(data->srcp_dma_buf,
 					&mdp3_res->pdev->dev, dom);
@@ -2262,7 +2270,8 @@ static int mdp3_continuous_splash_on(struct mdss_panel_data *pdata)
 		pr_err("invalid bus handle %d\n", bus_handle->handle);
 		return -EINVAL;
 	}
-	mdp3_calc_dma_res(panel_info, &mdp_clk_rate, &ab, &ib, panel_info->bpp);
+	mdp3_calc_dma_res(panel_info, &mdp_clk_rate, &ab,
+					&ib, MAX_BPP_SUPPORTED);
 
 	mdp3_clk_set_rate(MDP3_CLK_VSYNC, MDP_VSYNC_CLK_RATE,
 			MDP3_CLIENT_DMA_P);
@@ -2384,6 +2393,8 @@ static int mdp3_debug_init(struct platform_device *pdev)
 	int rc;
 	struct mdss_data_type *mdata;
 	struct mdss_debug_data *mdd;
+	struct mdss_debug_base *mdp_dbg_blk = NULL;
+	struct mdss_debug_base *vbif_dbg_blk = NULL;
 
 	mdata = devm_kzalloc(&pdev->dev, sizeof(*mdata), GFP_KERNEL);
 	if (!mdata)
@@ -2411,8 +2422,27 @@ static int mdp3_debug_init(struct platform_device *pdev)
 	debugfs_create_file("stat", 0644, mdd->root, mdp3_res,
 				&mdp3_debug_dump_stats_fops);
 
-	rc = mdss_debug_register_base(NULL, mdp3_res->mdp_base ,
-					mdp3_res->mdp_reg_size, NULL);
+	/* MDP Debug base registration */
+	rc = mdss_debug_register_base("mdp", mdp3_res->mdp_base,
+					mdp3_res->mdp_reg_size, &mdp_dbg_blk);
+	if (rc)
+		return rc;
+
+	mdss_debug_register_dump_range(pdev, mdp_dbg_blk, "qcom,regs-dump-mdp",
+		"qcom,regs-dump-names-mdp", "qcom,regs-dump-xin-id-mdp");
+
+
+	/* VBIF Debug base registration */
+	if (mdp3_res->vbif_base) {
+		rc = mdss_debug_register_base("vbif", mdp3_res->vbif_base,
+					mdp3_res->vbif_reg_size, &vbif_dbg_blk);
+		if (rc)
+			return rc;
+
+		mdss_debug_register_dump_range(pdev, vbif_dbg_blk,
+			 "qcom,regs-dump-vbif", "qcom,regs-dump-names-vbif",
+						 "qcom,regs-dump-xin-id-vbif");
+	}
 
 	return rc;
 }

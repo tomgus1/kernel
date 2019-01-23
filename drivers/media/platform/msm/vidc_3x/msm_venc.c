@@ -4157,6 +4157,7 @@ int msm_venc_inst_init(struct msm_vidc_inst *inst)
 	inst->buffer_mode_set[OUTPUT_PORT] = HAL_BUFFER_MODE_STATIC;
 	inst->buffer_mode_set[CAPTURE_PORT] = HAL_BUFFER_MODE_STATIC;
 	inst->prop.fps = DEFAULT_FPS;
+	inst->prop.operating_rate = 0;
 	inst->capability.pixelprocess_capabilities = 0;
 	inst->operating_rate = 0;
 	return rc;

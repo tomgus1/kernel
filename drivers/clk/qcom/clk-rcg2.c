@@ -1033,6 +1033,8 @@ static int clk_byte2_set_rate(struct clk_hw *hw, unsigned long rate,
 	for (i = 0; i < num_parents; i++) {
 		if (cfg == rcg->parent_map[i].cfg) {
 			f.src = rcg->parent_map[i].src;
+			if (clk_rcg2_current_config(rcg, &f))
+				return 0;
 			return clk_rcg2_configure(rcg, &f);
 		}
 	}

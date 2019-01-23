@@ -1836,6 +1836,27 @@ static struct vb2_buffer *get_vb_from_device_addr(struct buf_queue *bufq,
 	return vb;
 }
 
+static bool is_eos_buffer(struct msm_vidc_inst *inst, u32 device_addr)
+{
+	struct eos_buf *temp, *next;
+	bool found = false;
+
+	mutex_lock(&inst->eosbufs.lock);
+	list_for_each_entry_safe(temp, next, &inst->eosbufs.list, list) {
+		if (temp->smem.device_addr == device_addr) {
+			found = true;
+			list_del(&temp->list);
+			msm_comm_smem_free(inst, &temp->smem);
+			kfree(temp);
+			break;
+		}
+	}
+	mutex_unlock(&inst->eosbufs.lock);
+
+	return found;
+}
+
+
 static void handle_ebd(enum hal_command_response cmd, void *data)
 {
 	struct msm_vidc_cb_data_done *response = data;
@@ -1870,6 +1891,13 @@ static void handle_ebd(enum hal_command_response cmd, void *data)
 			response->clnt_data)
 			dprintk(VIDC_INFO, "Client data != bufaddr\n");
 		empty_buf_done = (struct vidc_hal_ebd *)&response->input_done;
+		/* If this is internal EOS buffer, handle it in driver */
+		if (is_eos_buffer(inst, empty_buf_done->packet_buffer)) {
+			dprintk(VIDC_DBG, "Received EOS buffer %pK\n",
+				(void *)empty_buf_done->packet_buffer);
+			goto exit;
+		}
+
 		if (empty_buf_done) {
 			if (empty_buf_done->status == VIDC_ERR_NOT_SUPPORTED) {
 				dprintk(VIDC_INFO,
@@ -1906,7 +1934,7 @@ static void handle_ebd(enum hal_command_response cmd, void *data)
 		mutex_unlock(&inst->bufq[OUTPUT_PORT].lock);
 		msm_vidc_debugfs_update(inst, MSM_VIDC_DEBUGFS_EVENT_EBD);
 	}
-
+exit:
 	put_inst(inst);
 }
 
@@ -3600,7 +3628,6 @@ int msm_vidc_comm_cmd(void *instance, union msm_v4l2_cmd *cmd)
 		flags = dec->flags;
 	}
 
-
 	switch (which_cmd) {
 	case V4L2_QCOM_CMD_FLUSH:
 		if (core->state != VIDC_CORE_INVALID &&
@@ -4335,6 +4362,26 @@ int msm_comm_release_scratch_buffers(struct msm_vidc_inst *inst,
 exit:
 	mutex_unlock(&inst->scratchbufs.lock);
 	return rc;
+}
+
+void msm_comm_release_eos_buffers(struct msm_vidc_inst *inst)
+{
+	struct eos_buf *buf, *next;
+
+	if (!inst) {
+		dprintk(VIDC_ERR,
+			"Invalid instance pointer = %pK\n", inst);
+		return;
+	}
+
+	mutex_lock(&inst->eosbufs.lock);
+	list_for_each_entry_safe(buf, next, &inst->eosbufs.list, list) {
+		list_del(&buf->list);
+		kfree(buf);
+	}
+
+	INIT_LIST_HEAD(&inst->eosbufs.list);
+	mutex_unlock(&inst->eosbufs.lock);
 }
 
 int msm_comm_release_persist_buffers(struct msm_vidc_inst *inst)

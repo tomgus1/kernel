@@ -89,7 +89,7 @@
 #define TIMESTAMP_AFTER		BIT(3)
 #define POST_CMD_DELAY		BIT(4)
 
-#define SPI_CORE2X_VOTE		(10000)
+#define SPI_CORE2X_VOTE		(7600)
 /* GSI CONFIG0 TRE Params */
 /* Flags bit fields */
 #define GSI_LOOPBACK_EN		(BIT(0))
@@ -155,6 +155,7 @@ struct spi_geni_master {
 	int num_xfers;
 	void *ipc;
 	bool shared_se;
+	bool dis_autosuspend;
 };
 
 static struct spi_master *get_spi_master(struct device *dev)
@@ -747,13 +748,12 @@ static int spi_geni_unprepare_message(struct spi_master *spi_mas,
 static int spi_geni_prepare_transfer_hardware(struct spi_master *spi)
 {
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
-	int ret = 0;
+	int ret = 0, count = 0;
 	u32 max_speed = spi->cur_msg->spi->max_speed_hz;
 	struct se_geni_rsc *rsc = &mas->spi_rsc;
 
-	/* Adjust the AB/IB based on the max speed of the slave.*/
+	/* Adjust the IB based on the max speed of the slave.*/
 	rsc->ib = max_speed * DEFAULT_BUS_WIDTH;
-	rsc->ab = max_speed * DEFAULT_BUS_WIDTH;
 	if (mas->shared_se) {
 		struct se_geni_rsc *rsc;
 		int ret = 0;
@@ -775,7 +775,12 @@ static int spi_geni_prepare_transfer_hardware(struct spi_master *spi)
 	} else {
 		ret = 0;
 	}
-
+	if (mas->dis_autosuspend) {
+		count = atomic_read(&mas->dev->power.usage_count);
+		if (count <= 0)
+			GENI_SE_ERR(mas->ipc, false, NULL,
+				"resume usage count mismatch:%d", count);
+	}
 	if (unlikely(!mas->setup)) {
 		int proto = get_se_proto(mas->base);
 		unsigned int major;
@@ -864,6 +869,9 @@ setup_ipc:
 		mas->shared_se =
 			(geni_read_reg(mas->base, GENI_IF_FIFO_DISABLE_RO) &
 							FIFO_IF_DISABLE);
+		if (mas->dis_autosuspend)
+			GENI_SE_DBG(mas->ipc, false, mas->dev,
+					"Auto Suspend is disabled\n");
 	}
 exit_prepare_transfer_hardware:
 	return ret;
@@ -872,7 +880,7 @@ exit_prepare_transfer_hardware:
 static int spi_geni_unprepare_transfer_hardware(struct spi_master *spi)
 {
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
-
+	int count = 0;
 	if (mas->shared_se) {
 		struct se_geni_rsc *rsc;
 		int ret = 0;
@@ -885,8 +893,16 @@ static int spi_geni_unprepare_transfer_hardware(struct spi_master *spi)
 			"%s: Error %d pinctrl_select_state\n", __func__, ret);
 	}
 
-	pm_runtime_mark_last_busy(mas->dev);
-	pm_runtime_put_autosuspend(mas->dev);
+	if (mas->dis_autosuspend) {
+		pm_runtime_put_sync(mas->dev);
+		count = atomic_read(&mas->dev->power.usage_count);
+		if (count < 0)
+			GENI_SE_ERR(mas->ipc, false, NULL,
+				"suspend usage count mismatch:%d", count);
+	} else {
+		pm_runtime_mark_last_busy(mas->dev);
+		pm_runtime_put_autosuspend(mas->dev);
+	}
 	return 0;
 }
 
@@ -897,7 +913,7 @@ static void setup_fifo_xfer(struct spi_transfer *xfer,
 	u32 m_cmd = 0;
 	u32 m_param = 0;
 	u32 spi_tx_cfg = geni_read_reg(mas->base, SE_SPI_TRANS_CFG);
-	u32 trans_len = 0;
+	u32 trans_len = 0, fifo_size = 0;
 
 	if (xfer->bits_per_word != mas->cur_word_len) {
 		spi_setup_word_len(mas, mode, xfer->bits_per_word);
@@ -961,7 +977,9 @@ static void setup_fifo_xfer(struct spi_transfer *xfer,
 		mas->rx_rem_bytes = xfer->len;
 	}
 
-	if (trans_len > (mas->tx_fifo_depth * mas->tx_fifo_width)) {
+	fifo_size =
+		(mas->tx_fifo_depth * mas->tx_fifo_width / mas->cur_word_len);
+	if (trans_len > fifo_size) {
 		if (mas->cur_xfer_mode != SE_DMA) {
 			mas->cur_xfer_mode = SE_DMA;
 			geni_se_select_mode(mas->base, mas->cur_xfer_mode);
@@ -1235,12 +1253,12 @@ static void geni_spi_handle_rx(struct spi_geni_master *mas)
 	mas->rx_rem_bytes -= rx_bytes;
 }
 
-static irqreturn_t geni_spi_irq(int irq, void *dev)
+static irqreturn_t geni_spi_irq(int irq, void *data)
 {
-	struct spi_geni_master *mas = dev;
+	struct spi_geni_master *mas = data;
 	u32 m_irq = 0;
 
-	if (pm_runtime_status_suspended(dev)) {
+	if (pm_runtime_status_suspended(mas->dev)) {
 		GENI_SE_DBG(mas->ipc, false, mas->dev,
 				"%s: device is suspended\n", __func__);
 		goto exit_geni_spi_irq;
@@ -1413,7 +1431,9 @@ static int spi_geni_probe(struct platform_device *pdev)
 	rt_pri = of_property_read_bool(pdev->dev.of_node, "qcom,rt");
 	if (rt_pri)
 		spi->rt = true;
-
+	geni_mas->dis_autosuspend =
+		of_property_read_bool(pdev->dev.of_node,
+				"qcom,disable-autosuspend");
 	geni_mas->phys_addr = res->start;
 	geni_mas->size = resource_size(res);
 	geni_mas->base = devm_ioremap(&pdev->dev, res->start,
@@ -1453,8 +1473,11 @@ static int spi_geni_probe(struct platform_device *pdev)
 	init_completion(&geni_mas->tx_cb);
 	init_completion(&geni_mas->rx_cb);
 	pm_runtime_set_suspended(&pdev->dev);
-	pm_runtime_set_autosuspend_delay(&pdev->dev, SPI_AUTO_SUSPEND_DELAY);
-	pm_runtime_use_autosuspend(&pdev->dev);
+	if (!geni_mas->dis_autosuspend) {
+		pm_runtime_set_autosuspend_delay(&pdev->dev,
+					SPI_AUTO_SUSPEND_DELAY);
+		pm_runtime_use_autosuspend(&pdev->dev);
+	}
 	pm_runtime_enable(&pdev->dev);
 	ret = spi_register_master(spi);
 	if (ret) {

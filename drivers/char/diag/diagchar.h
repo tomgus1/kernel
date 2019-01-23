@@ -296,6 +296,8 @@ for (i = 0; i <= fwd_info->num_pd - 2; i++)	\
 #define DIAG_ID_UNKNOWN		0
 #define DIAG_ID_APPS		1
 
+#define DIAG_ROUTE_TO_USB 0
+#define DIAG_ROUTE_TO_PCIE 1
 /* List of remote processor supported */
 enum remote_procs {
 	MDM = 1,
@@ -483,6 +485,7 @@ struct diag_md_session_t {
 	int pid;
 	int peripheral_mask;
 	uint8_t hdlc_disabled;
+	uint8_t msg_mask_tbl_count;
 	struct timer_list hdlc_reset_timer;
 	struct diag_mask_info *msg_mask;
 	struct diag_mask_info *log_mask;
@@ -591,6 +594,7 @@ struct diagchar_dev {
 	struct mutex cmd_reg_mutex;
 	uint32_t cmd_reg_count;
 	struct mutex diagfwd_channel_mutex[NUM_PERIPHERALS];
+	int transport_set;
 	/* Sizes that reflect memory pool sizes */
 	unsigned int poolsize;
 	unsigned int poolsize_hdlc;
@@ -642,6 +646,7 @@ struct diagchar_dev {
 #ifdef CONFIG_DIAG_OVER_USB
 	int usb_connected;
 #endif
+	int pcie_connected;
 	struct workqueue_struct *diag_wq;
 	struct work_struct diag_drain_work;
 	struct work_struct update_user_clients;

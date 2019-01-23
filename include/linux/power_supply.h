@@ -132,6 +132,12 @@ enum {
 	POWER_SUPPLY_PD_PPS_ACTIVE,
 };
 
+enum {
+	POWER_SUPPLY_QC_CTM_DISABLE = BIT(0),
+	POWER_SUPPLY_QC_THERMAL_BALANCE_DISABLE = BIT(1),
+	POWER_SUPPLY_QC_INOV_THERMAL_DISABLE = BIT(2),
+};
+
 enum power_supply_property {
 	/* Properties of type `int' */
 	POWER_SUPPLY_PROP_STATUS = 0,
@@ -339,6 +345,9 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_CHARGER_TYPE_DETERMINED,
 	POWER_SUPPLY_PROP_MONOTONIC_SOC,
 #endif
+	POWER_SUPPLY_PROP_QC_OPTI_DISABLE,
+	POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE,
+	POWER_SUPPLY_PROP_CC_SOC,
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_PROP_CHARGE_COUNTER_EXT,
 	/* Properties of type `const char *' */

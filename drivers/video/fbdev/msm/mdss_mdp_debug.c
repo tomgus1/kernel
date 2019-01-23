@@ -1937,7 +1937,7 @@ static void __dump_mixer(struct seq_file *s, struct mdss_mdp_mixer *mixer,
 	struct mdss_mdp_pipe *pipe;
 	int i, cnt = 0;
 
-	if (!mixer)
+	if (!mixer || !mfd)
 		return;
 
 	seq_printf(s, "\n%s Mixer #%d  res=%dx%d roi[%d, %d, %d, %d] %s\n",
@@ -2220,7 +2220,7 @@ static void __stats_ctl_dump(struct mdss_mdp_ctl *ctl, struct seq_file *s)
 		seq_printf(s, "vsync: %08u \tunderrun: %08u\n",
 				ctl->vsync_cnt, ctl->underrun_cnt);
 		if (ctl->mfd) {
-			seq_printf(s, "user_bl: %08u \tmod_bl: %08u\n",
+			seq_printf(s, "user_bl: %llu \tmod_bl: %08u\n",
 				ctl->mfd->bl_level, ctl->mfd->bl_level_scaled);
 		}
 	} else {

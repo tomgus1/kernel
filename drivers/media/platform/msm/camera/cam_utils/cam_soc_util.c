@@ -281,6 +281,8 @@ int cam_soc_util_get_level_from_string(const char *string,
 		*level = CAM_SVSL1_VOTE;
 	} else if (!strcmp(string, "nominal")) {
 		*level = CAM_NOMINAL_VOTE;
+	} else if (!strcmp(string, "nominal_l1")) {
+		*level = CAM_NOMINALL1_VOTE;
 	} else if (!strcmp(string, "turbo")) {
 		*level = CAM_TURBO_VOTE;
 	} else {

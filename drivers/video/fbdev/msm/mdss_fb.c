@@ -324,6 +324,18 @@ static enum led_brightness mdss_fb_get_bl_brightness(
 	return value;
 }
 
+static enum led_brightness mdss_fb_get_bl_brightness(
+	struct led_classdev *led_cdev)
+{
+	struct msm_fb_data_type *mfd = dev_get_drvdata(led_cdev->dev->parent);
+	u64 value;
+
+	MDSS_BL_TO_BRIGHT(value, mfd->bl_level, mfd->panel_info->bl_max,
+			  mfd->panel_info->brightness_max);
+
+	return value;
+}
+
 static struct led_classdev backlight_led = {
 	.name           = "lcd-backlight",
 	.brightness     = MDSS_MAX_BL_BRIGHTNESS / 2,
@@ -921,8 +933,8 @@ static ssize_t mdss_fb_idle_pc_notify(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "idle power collapsed\n");
 }
 
-static DEVICE_ATTR(msm_fb_type, S_IRUGO, mdss_fb_get_type, NULL);
-static DEVICE_ATTR(msm_fb_split, S_IRUGO | S_IWUSR, mdss_fb_show_split,
+static DEVICE_ATTR(msm_fb_type, 0444, mdss_fb_get_type, NULL);
+static DEVICE_ATTR(msm_fb_split, 0644, mdss_fb_show_split,
 					mdss_fb_store_split);
 static DEVICE_ATTR(show_blank_event, S_IRUGO, mdss_mdp_show_blank_event, NULL);
 static DEVICE_ATTR(idle_time, S_IRUGO | S_IWUSR | S_IWGRP,
@@ -941,7 +953,7 @@ static DEVICE_ATTR(measured_fps, S_IRUGO | S_IWUSR | S_IWGRP,
 	mdss_fb_get_fps_info, NULL);
 static DEVICE_ATTR(msm_fb_persist_mode, S_IRUGO | S_IWUSR,
 	mdss_fb_get_persist_mode, mdss_fb_change_persist_mode);
-static DEVICE_ATTR(idle_power_collapse, S_IRUGO, mdss_fb_idle_pc_notify, NULL);
+static DEVICE_ATTR(idle_power_collapse, 0444, mdss_fb_idle_pc_notify, NULL);
 
 static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_msm_fb_type.attr,
@@ -1403,7 +1415,6 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	mfd->calib_mode_bl = 0;
 	mfd->unset_bl_level = U32_MAX;
 	mfd->bl_extn_level = -1;
-	mfd->bl_level_usr = backlight_led.brightness;
 
 	mfd->pdev = pdev;
 
@@ -2272,6 +2283,14 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	 * supported for command mode panels. For all other panel, treat lp
 	 * mode as full unblank and ulp mode as full blank.
 	 */
+	if ((mfd->panel_info->type == SPI_PANEL) &&
+		((blank_mode == BLANK_FLAG_LP) ||
+		(blank_mode == BLANK_FLAG_ULP))) {
+		pr_debug("lp/ulp mode are not supported for SPI panels\n");
+		if (mdss_fb_is_power_on_interactive(mfd))
+			return 0;
+	}
+
 	if (mfd->panel_info->type != MIPI_CMD_PANEL) {
 		if (BLANK_FLAG_LP == blank_mode) {
 			pr_debug("lp mode only valid for cmd mode panels\n");
@@ -2389,7 +2408,10 @@ static int mdss_fb_blank(int blank_mode, struct fb_info *info)
 	int ret;
 	struct mdss_panel_data *pdata;
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+	ktime_t start, end;
+	s64 actual_time;
 
+	start = ktime_get();
 	ret = mdss_fb_pan_idle(mfd);
 	if (ret) {
 		pr_warn("mdss_fb_pan_idle for fb%d failed. ret=%d\n",
@@ -2428,7 +2450,12 @@ static int mdss_fb_blank(int blank_mode, struct fb_info *info)
 		mdss_mdp_enable_panel_disable_mode(mfd, false);
 
 	ret = mdss_fb_blank_sub(blank_mode, info, mfd->op_enable);
-	MDSS_XLOG(blank_mode);
+	end = ktime_get();
+	actual_time = ktime_ms_delta(end, start);
+
+	MDSS_XLOG(blank_mode, actual_time);
+	pr_debug("blank_mode: %d and transition time: %lldms\n",
+					blank_mode, actual_time);
 
 end:
 	mutex_unlock(&mfd->mdss_sysfs_lock);
@@ -4032,6 +4059,20 @@ static int __mdss_fb_perform_commit(struct msm_fb_data_type *mfd)
 		return 0;
 #endif
 
+	if (mfd->panel_info->panel_dead) {
+		pr_debug("Panel dead, Signal fence and exit commit\n");
+		/*
+		 * In case of ESD attack, return early from commit
+		 * after signalling fences.
+		 */
+		mdss_fb_release_kickoff(mfd);
+		mdss_fb_signal_timeline(sync_pt_data);
+		if ((mfd->panel.type == MIPI_CMD_PANEL) &&
+			(mfd->mdp.signal_retire_fence))
+			mfd->mdp.signal_retire_fence(mfd, 1);
+		return ret;
+	}
+
 	if (!sync_pt_data->async_wait_fences)
 		mdss_fb_wait_for_fence(sync_pt_data);
 	sync_pt_data->flushed = false;
@@ -5000,7 +5041,6 @@ static int mdss_fb_atomic_commit_ioctl(struct fb_info *info,
 	struct mdp_destination_scaler_data *ds_data = NULL;
 	struct mdp_destination_scaler_data __user *ds_data_user;
 	struct msm_fb_data_type *mfd;
-	struct mdss_overlay_private *mdp5_data = NULL;
 
 	ret = copy_from_user(&commit, argp, sizeof(struct mdp_layer_commit));
 	if (ret) {
@@ -5011,23 +5051,6 @@ static int mdss_fb_atomic_commit_ioctl(struct fb_info *info,
 	mfd = (struct msm_fb_data_type *)info->par;
 	if (!mfd)
 		return -EINVAL;
-
-	mdp5_data = mfd_to_mdp5_data(mfd);
-
-	if (mfd->panel_info->panel_dead) {
-		pr_debug("early commit return\n");
-		MDSS_XLOG(mfd->panel_info->panel_dead);
-		/*
-		 * In case of an ESD attack, since we early return from the
-		 * commits, we need to signal the outstanding fences.
-		 */
-		mdss_fb_release_fences(mfd);
-		if ((mfd->panel.type == MIPI_CMD_PANEL) &&
-			mfd->mdp.signal_retire_fence && mdp5_data)
-			mfd->mdp.signal_retire_fence(mfd,
-						mdp5_data->retire_cnt);
-		return 0;
-	}
 
 	output_layer_user = commit.commit_v1.output_layer;
 	if (output_layer_user) {
@@ -5651,10 +5674,12 @@ void mdss_fb_calc_fps(struct msm_fb_data_type *mfd)
 
 void mdss_fb_idle_pc(struct msm_fb_data_type *mfd)
 {
-	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
+	struct mdss_overlay_private *mdp5_data;
 
-	if (mdss_fb_is_power_off(mfd))
+	if (!mfd || mdss_fb_is_power_off(mfd))
 		return;
+
+	mdp5_data = mfd_to_mdp5_data(mfd);
 
 	if ((mfd->panel_info->type == MIPI_CMD_PANEL) && mdp5_data) {
 		pr_debug("Notify fb%d idle power collapsed\n", mfd->index);

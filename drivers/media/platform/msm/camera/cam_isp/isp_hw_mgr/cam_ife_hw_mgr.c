@@ -95,7 +95,8 @@ static int cam_ife_mgr_get_hw_caps(void *hw_mgr_priv,
 
 	CAM_DBG(CAM_ISP, "enter");
 
-	if (copy_from_user(&query_isp, (void __user *)query->caps_handle,
+	if (copy_from_user(&query_isp,
+		u64_to_user_ptr(query->caps_handle),
 		sizeof(struct cam_isp_query_cap_cmd))) {
 		rc = -EFAULT;
 		return rc;
@@ -114,8 +115,8 @@ static int cam_ife_mgr_get_hw_caps(void *hw_mgr_priv,
 		query_isp.dev_caps[i].hw_version.reserved = 0;
 	}
 
-	if (copy_to_user((void __user *)query->caps_handle, &query_isp,
-		sizeof(struct cam_isp_query_cap_cmd)))
+	if (copy_to_user(u64_to_user_ptr(query->caps_handle),
+		&query_isp, sizeof(struct cam_isp_query_cap_cmd)))
 		rc = -EFAULT;
 
 	CAM_DBG(CAM_ISP, "exit rc :%d", rc);
@@ -1562,7 +1563,8 @@ static int cam_ife_mgr_acquire_hw(void *hw_mgr_priv,
 			goto free_res;
 		}
 
-		in_port = memdup_user((void __user *)isp_resource[i].res_hdl,
+		in_port = memdup_user(
+			u64_to_user_ptr(isp_resource[i].res_hdl),
 			isp_resource[i].length);
 		if (!IS_ERR(in_port)) {
 			in_port_length = sizeof(struct cam_isp_in_port_info) +
@@ -2162,7 +2164,8 @@ static int cam_ife_mgr_start_hw(void *hw_mgr_priv, void *start_hw_args)
 	struct cam_isp_stop_args          stop_isp;
 	struct cam_ife_hw_mgr_ctx        *ctx;
 	struct cam_ife_hw_mgr_res        *hw_mgr_res;
-	uint32_t                          i;
+	struct cam_isp_resource_node     *rsrc_node = NULL;
+	uint32_t                          i, camif_debug;
 
 	if (!hw_mgr_priv || !start_isp) {
 		CAM_ERR(CAM_ISP, "Invalid arguments");
@@ -4129,8 +4132,8 @@ int cam_ife_mgr_do_tasklet_buf_done(void *handler_priv,
 	evt_payload = evt_payload_priv;
 	ife_hwr_mgr_ctx = (struct cam_ife_hw_mgr_ctx *)evt_payload->ctx;
 
-	CAM_DBG(CAM_ISP, "addr of evt_payload = %llx core index:0x%x",
-		(uint64_t)evt_payload, evt_payload->core_index);
+	CAM_DBG(CAM_ISP, "addr of evt_payload = %pK core index:0x%x",
+		evt_payload, evt_payload->core_index);
 	CAM_DBG(CAM_ISP, "bus_irq_status_0: = %x", evt_payload->irq_reg_val[0]);
 	CAM_DBG(CAM_ISP, "bus_irq_status_1: = %x", evt_payload->irq_reg_val[1]);
 	CAM_DBG(CAM_ISP, "bus_irq_status_2: = %x", evt_payload->irq_reg_val[2]);
@@ -4265,6 +4268,28 @@ DEFINE_SIMPLE_ATTRIBUTE(cam_ife_csid_debug,
 	cam_ife_get_csid_debug,
 	cam_ife_set_csid_debug, "%16llu");
 
+static int cam_ife_set_camif_debug(void *data, u64 val)
+{
+	g_ife_hw_mgr.debug_cfg.camif_debug = val;
+	CAM_DBG(CAM_ISP,
+		"Set camif enable_diag_sensor_status value :%lld", val);
+	return 0;
+}
+
+static int cam_ife_get_camif_debug(void *data, u64 *val)
+{
+	*val = g_ife_hw_mgr.debug_cfg.camif_debug;
+	CAM_DBG(CAM_ISP,
+		"Set camif enable_diag_sensor_status value :%lld",
+		g_ife_hw_mgr.debug_cfg.csid_debug);
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(cam_ife_camif_debug,
+	cam_ife_get_camif_debug,
+	cam_ife_set_camif_debug, "%16llu");
+
 static int cam_ife_hw_mgr_debug_register(void)
 {
 	g_ife_hw_mgr.debug_cfg.dentry = debugfs_create_dir("camera_ife",
@@ -4288,6 +4313,14 @@ static int cam_ife_hw_mgr_debug_register(void)
 		g_ife_hw_mgr.debug_cfg.dentry,
 		&g_ife_hw_mgr.debug_cfg.enable_recovery)) {
 		CAM_ERR(CAM_ISP, "failed to create enable_recovery");
+		goto err;
+	}
+
+	if (!debugfs_create_file("ife_camif_debug",
+		0644,
+		g_ife_hw_mgr.debug_cfg.dentry, NULL,
+		&cam_ife_camif_debug)) {
+		CAM_ERR(CAM_ISP, "failed to create cam_ife_camif_debug");
 		goto err;
 	}
 	g_ife_hw_mgr.debug_cfg.enable_recovery = 0;

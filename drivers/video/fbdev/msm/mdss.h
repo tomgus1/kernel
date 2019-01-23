@@ -170,7 +170,7 @@ enum mdss_hw_quirk {
 	MDSS_QUIRK_MMSS_GDSC_COLLAPSE,
 	MDSS_QUIRK_MDP_CLK_SET_RATE,
 	MDSS_QUIRK_HDR_SUPPORT_ENABLED,
-	MDSS_QUIRK_MIN_BUS_VOTE,
+	MDSS_QUIRK_MDP_CLK_SET_RATE,
 	MDSS_QUIRK_MAX,
 };
 
@@ -313,6 +313,7 @@ struct mdss_data_type {
 	bool en_svs_high;
 	u32 max_mdp_clk_rate;
 	struct mdss_util_intf *mdss_util;
+	struct mdss_panel_data *pdata;
 	unsigned long mdp_clk_rate;
 
 	struct platform_device *pdev;
@@ -549,14 +550,8 @@ struct mdss_data_type {
 	u32 bcolor2;
 	struct mdss_scaler_block *scaler_off;
 
-	u32 max_dest_scaler_input_width;
-	u32 max_dest_scaler_output_width;
-	struct mdss_mdp_destination_scaler *ds;
-	u32 sec_disp_en;
-	u32 sec_cam_en;
-	u32 sec_session_cnt;
-	wait_queue_head_t secure_waitq;
-	struct cx_ipeak_client *mdss_cx_ipeak;
+	u32 splash_intf_sel;
+	u32 splash_split_disp;
 	struct mult_factor bus_throughput_factor;
 };
 

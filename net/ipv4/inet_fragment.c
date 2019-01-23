@@ -185,6 +185,7 @@ static struct inet_frag_queue *inet_frag_create(struct netns_frags *nf,
 {
 	struct inet_frags *f = nf->f;
 	struct inet_frag_queue *q;
+	int err;
 
 	q = inet_frag_alloc(nf, f, arg);
 	if (!q) {

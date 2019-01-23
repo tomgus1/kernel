@@ -1885,7 +1885,7 @@ end:
 
 int mdss_mode_switch(struct msm_fb_data_type *mfd, u32 mode)
 {
-	struct mdss_rect l_roi, r_roi;
+	struct mdss_rect l_roi = {0}, r_roi = {0};
 	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
 	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
 	struct mdss_mdp_ctl *sctl;
@@ -2565,6 +2565,25 @@ int mdss_mdp_overlay_kickoff(struct msm_fb_data_type *mfd,
 	if (ctl->ops.wait_pingpong && mdp5_data->mdata->serialize_wait4pp)
 		mdss_mdp_display_wait4pingpong(ctl, true);
 
+	mdp5_data->cache_null_commit = list_empty(&mdp5_data->pipes_used);
+	sd_transition_state = mdp5_data->sd_transition_state;
+	if (sd_transition_state != SD_TRANSITION_NONE) {
+		ret = __config_secure_display(mdp5_data);
+		if (IS_ERR_VALUE((unsigned long)ret)) {
+			pr_err("Secure session config failed\n");
+			goto commit_fail;
+		}
+	}
+
+	if (!data) {
+		atomic_inc(&mfd->mdp_sync_pt_data.commit_cnt);
+		MDSS_XLOG(atomic_read(&mfd->mdp_sync_pt_data.commit_cnt));
+	}
+
+	/*
+	 * Setup pipe in solid fill before unstaging,
+	 * to ensure no fetches are happening after dettach or reattach.
+	 */
 	list_for_each_entry_safe(pipe, tmp, &mdp5_data->pipes_cleanup, list) {
 		mdss_mdp_mixer_pipe_unstage(pipe, pipe->mixer_left);
 		mdss_mdp_mixer_pipe_unstage(pipe, pipe->mixer_right);
@@ -3456,8 +3475,7 @@ static void dfps_update_panel_params(struct mdss_panel_data *pdata,
 		dfps_update_fps(&pdata->panel_info, new_fps);
 
 		pdata->panel_info.prg_fet =
-			mdss_mdp_get_prefetch_lines(&pdata->panel_info);
-
+			mdss_mdp_get_prefetch_lines(&pdata->panel_info, false);
 	} else if (pdata->panel_info.dfps_update ==
 			DFPS_IMMEDIATE_PORCH_UPDATE_MODE_HFP) {
 		int add_h_pixels;
@@ -5835,6 +5853,7 @@ static int mdss_mdp_overlay_off(struct msm_fb_data_type *mfd)
 	int rc;
 	struct mdss_overlay_private *mdp5_data;
 	struct mdss_mdp_mixer *mixer;
+	struct mdss_mdp_pipe *pipe, *tmp;
 	int need_cleanup;
 	int retire_cnt;
 	bool destroy_ctl = false;
@@ -5890,6 +5909,13 @@ static int mdss_mdp_overlay_off(struct msm_fb_data_type *mfd)
 		mixer->cursor_enabled = 0;
 
 	mutex_lock(&mdp5_data->list_lock);
+	if (!list_empty(&mdp5_data->pipes_used)) {
+		list_for_each_entry_safe(
+			pipe, tmp, &mdp5_data->pipes_used, list) {
+			pipe->file = NULL;
+			list_move(&pipe->list, &mdp5_data->pipes_cleanup);
+		}
+	}
 	need_cleanup = !list_empty(&mdp5_data->pipes_cleanup);
 	mutex_unlock(&mdp5_data->list_lock);
 	mutex_unlock(&mdp5_data->ov_lock);
