@@ -855,8 +855,15 @@ static inline bool intel_pmu_has_bts_period(struct perf_event *event, u64 period
 static inline bool intel_pmu_has_bts(struct perf_event *event)
 {
 	struct hw_perf_event *hwc = &event->hw;
+	unsigned int hw_event, bts_event;
 
-	return intel_pmu_has_bts_period(event, hwc->sample_period);
+	if (event->attr.freq)
+		return false;
+
+	hw_event = hwc->config & INTEL_ARCH_EVENT_MASK;
+	bts_event = x86_pmu.event_map(PERF_COUNT_HW_BRANCH_INSTRUCTIONS);
+
+	return hw_event == bts_event && hwc->sample_period == 1;
 }
 
 int intel_pmu_save_and_restart(struct perf_event *event);

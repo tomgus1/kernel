@@ -118,6 +118,11 @@ enum awake_reasons {
 	FG_STATUS_NOTIFY_WAKE = BIT(1),
 };
 
+enum awake_reasons {
+	FG_SW_ESR_WAKE = BIT(0),
+	FG_STATUS_NOTIFY_WAKE = BIT(1),
+};
+
 /* SRAM access */
 enum sram_access_flags {
 	FG_IMA_DEFAULT	= 0,
@@ -334,10 +339,10 @@ struct fg_dt_props {
 	int	sync_sleep_threshold_ma;
 	int	bmd_en_delay_ms;
 	int	ki_coeff_full_soc_dischg;
-	int	ki_coeff_low_dischg;
 	int	ki_coeff_hi_chg;
 	int	jeita_thresholds[NUM_JEITA_LEVELS];
 	int	ki_coeff_soc[KI_COEFF_SOC_LEVELS];
+	int	ki_coeff_low_dischg[KI_COEFF_SOC_LEVELS];
 	int	ki_coeff_med_dischg[KI_COEFF_SOC_LEVELS];
 	int	ki_coeff_hi_dischg[KI_COEFF_SOC_LEVELS];
 	int	slope_limit_coeffs[SLOPE_LIMIT_NUM_COEFFS];
@@ -361,7 +366,7 @@ struct fg_cyc_ctr_data {
 	bool		started[BUCKET_COUNT];
 	u16		count[BUCKET_COUNT];
 	u8		last_soc[BUCKET_COUNT];
-	int		id;
+	char		counter[BUCKET_COUNT * 8];
 	struct mutex	lock;
 };
 

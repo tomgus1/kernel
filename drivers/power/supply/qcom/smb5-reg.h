@@ -73,6 +73,11 @@ enum {
 
 #define CHGR_FAST_CHARGE_CURRENT_CFG_REG	(CHGR_BASE + 0x61)
 
+#define CHGR_ADC_ITERM_UP_THD_MSB_REG		(CHGR_BASE + 0x67)
+#define CHGR_ADC_ITERM_UP_THD_LSB_REG		(CHGR_BASE + 0x68)
+#define CHGR_ADC_ITERM_LO_THD_MSB_REG		(CHGR_BASE + 0x69)
+#define CHGR_ADC_ITERM_LO_THD_LSB_REG		(CHGR_BASE + 0x6A)
+
 #define CHGR_NO_SAMPLE_TERM_RCHG_CFG_REG	(CHGR_BASE + 0x6B)
 #define NO_OF_SAMPLE_FOR_RCHG_SHIFT		2
 #define NO_OF_SAMPLE_FOR_RCHG			GENMASK(3, 2)
@@ -102,11 +107,15 @@ enum {
 #define JEITA_CCCOMP_CFG_COLD_REG		(CHGR_BASE + 0x93)
 
 #define CHGR_JEITA_THRESHOLD_BASE_REG(i)	(CHGR_BASE + 0x94 + (i * 4))
+
+#define CHGR_ENG_CHARGING_CFG_REG		(CHGR_BASE + 0xC0)
+#define CHGR_ITERM_USE_ANALOG_BIT		BIT(3)
+
 /********************************
  *  DCDC Peripheral Registers  *
  ********************************/
 #define ICL_MAX_STATUS_REG			(DCDC_BASE + 0x06)
-
+#define ICL_STATUS_REG				(DCDC_BASE + 0x07)
 #define AICL_ICL_STATUS_REG			(DCDC_BASE + 0x08)
 
 #define AICL_STATUS_REG				(DCDC_BASE + 0x0A)
@@ -117,6 +126,7 @@ enum {
 #define USBIN_SUSPEND_STS_BIT			BIT(6)
 #define USE_USBIN_BIT				BIT(4)
 #define USE_DCIN_BIT				BIT(3)
+#define POWER_PATH_MASK				GENMASK(2, 1)
 #define VALID_INPUT_POWER_SOURCE_STS_BIT	BIT(0)
 
 #define DCDC_CMD_OTG_REG			(DCDC_BASE + 0x40)
@@ -145,6 +155,19 @@ enum {
 
 #define SHIP_MODE_REG				(BATIF_BASE + 0x40)
 #define SHIP_MODE_EN_BIT			BIT(0)
+
+#define BATIF_ADC_CHANNEL_EN_REG		(BATIF_BASE + 0x82)
+#define IBATT_CHANNEL_EN_BIT			BIT(6)
+#define CONN_THM_CHANNEL_EN_BIT			BIT(4)
+#define DIE_TEMP_CHANNEL_EN_BIT			BIT(2)
+
+#define BATIF_ADC_INTERNAL_PULL_UP_REG		(BATIF_BASE + 0x86)
+#define INTERNAL_PULL_UP_CONN_THM_MASK		GENMASK(5, 4)
+#define CONN_THM_SHIFT				4
+#define INTERNAL_PULL_NO_PULL			0x00
+#define INTERNAL_PULL_30K_PULL			0x01
+#define INTERNAL_PULL_100K_PULL			0x02
+#define INTERNAL_PULL_400K_PULL			0x03
 
 /********************************
  *  USBIN Peripheral Registers  *
@@ -238,6 +261,8 @@ enum {
 #define USBIN_AICL_OPTIONS_CFG_REG		(USBIN_BASE + 0x80)
 #define USBIN_AICL_ADC_EN_BIT			BIT(3)
 
+#define USBIN_5V_AICL_THRESHOLD_REG		(USBIN_BASE + 0x81)
+#define USBIN_CONT_AICL_THRESHOLD_REG		(USBIN_BASE + 0x84)
 /********************************
  *  DCIN Peripheral Registers   *
  ********************************/
@@ -252,10 +277,11 @@ enum {
  *  TYPEC Peripheral Registers  *
  ********************************/
 #define TYPE_C_SNK_STATUS_REG			(TYPEC_BASE + 0x06)
-#define DETECTED_SRC_TYPE_MASK			GENMASK(3, 1)
+#define DETECTED_SRC_TYPE_MASK			GENMASK(3, 0)
 #define SNK_RP_STD_BIT				BIT(3)
 #define SNK_RP_1P5_BIT				BIT(2)
 #define SNK_RP_3P0_BIT				BIT(1)
+#define SNK_RP_SHORT_BIT			BIT(0)
 
 #define TYPE_C_SRC_STATUS_REG			(TYPEC_BASE + 0x08)
 #define DETECTED_SNK_TYPE_MASK			GENMASK(4, 0)
@@ -269,6 +295,7 @@ enum {
 #define TYPEC_ATTACH_DETACH_STATE_BIT		BIT(5)
 
 #define TYPE_C_MISC_STATUS_REG			(TYPEC_BASE + 0x0B)
+#define TYPEC_WATER_DETECTION_STATUS_BIT	BIT(7)
 #define SNK_SRC_MODE_BIT			BIT(6)
 #define TYPEC_VBUS_ERROR_STATUS_BIT		BIT(4)
 #define CC_ORIENTATION_BIT			BIT(1)
@@ -281,9 +308,14 @@ enum {
 #define TYPEC_U_USB_STATUS_REG			(TYPEC_BASE + 0x0F)
 #define U_USB_GROUND_NOVBUS_BIT			BIT(6)
 #define U_USB_GROUND_BIT			BIT(4)
+#define U_USB_FMB1_BIT				BIT(3)
+#define U_USB_FLOAT1_BIT			BIT(2)
+#define U_USB_FMB2_BIT				BIT(1)
+#define U_USB_FLOAT2_BIT			BIT(0)
 
 #define TYPE_C_MODE_CFG_REG			(TYPEC_BASE + 0x44)
 #define TYPEC_POWER_ROLE_CMD_MASK		GENMASK(2, 1)
+#define EN_TRY_SNK_BIT				BIT(4)
 #define EN_SRC_ONLY_BIT				BIT(2)
 #define EN_SNK_ONLY_BIT				BIT(1)
 #define TYPEC_DISABLE_CMD_BIT			BIT(0)
@@ -325,14 +357,20 @@ enum {
 #define REDUCE_TCCDEBOUNCE_TO_2MS_BIT		BIT(2)
 
 #define TYPEC_U_USB_CFG_REG			(TYPEC_BASE + 0x70)
+#define EN_MICRO_USB_FACTORY_MODE_BIT		BIT(1)
 #define EN_MICRO_USB_MODE_BIT			BIT(0)
+
+#define TYPEC_U_USB_WATER_PROTECTION_CFG_REG	(TYPEC_BASE + 0x72)
+#define EN_MICRO_USB_WATER_PROTECTION_BIT	BIT(4)
+#define MICRO_USB_DETECTION_ON_TIME_CFG_MASK	GENMASK(3, 2)
+#define MICRO_USB_DETECTION_PERIOD_CFG_MASK	GENMASK(1, 0)
 
 #define TYPEC_MICRO_USB_MODE_REG		(TYPEC_BASE + 0x73)
 #define MICRO_USB_MODE_ONLY_BIT			BIT(0)
 /********************************
  *  MISC Peripheral Registers  *
  ********************************/
-#define TEMP_RANGE_STATUS_REG			(MISC_BASE + 0x06)
+#define MISC_TEMP_RANGE_STATUS_REG		(MISC_BASE + 0x06)
 #define THERM_REG_ACTIVE_BIT			BIT(6)
 #define TLIM_BIT				BIT(5)
 #define TEMP_RANGE_MASK				GENMASK(4, 1)
@@ -342,10 +380,17 @@ enum {
 #define TEMP_BELOW_RANGE_BIT			BIT(1)
 #define THERMREG_DISABLED_BIT			BIT(0)
 
+#define MISC_DIE_TEMP_STATUS_REG		(MISC_BASE + 0x07)
+#define DIE_TEMP_SHDN_BIT			BIT(3)
+#define DIE_TEMP_RST_BIT			BIT(2)
+#define DIE_TEMP_UB_BIT				BIT(1)
+#define DIE_TEMP_LB_BIT				BIT(0)
+
 #define BARK_BITE_WDOG_PET_REG			(MISC_BASE + 0x43)
 #define BARK_BITE_WDOG_PET_BIT			BIT(0)
 
 #define AICL_CMD_REG				(MISC_BASE + 0x44)
+#define RESTART_AICL_BIT			BIT(1)
 #define RERUN_AICL_BIT				BIT(0)
 
 #define MISC_SMB_EN_CMD_REG			(MISC_BASE + 0x48)
@@ -364,6 +409,16 @@ enum {
 #define BITE_WDOG_DISABLE_CHARGING_CFG_BIT	BIT(7)
 #define BARK_WDOG_TIMEOUT_MASK			GENMASK(3, 2)
 #define BITE_WDOG_TIMEOUT_MASK			GENMASK(1, 0)
+
+#define MISC_THERMREG_SRC_CFG_REG		(MISC_BASE + 0x70)
+#define THERMREG_SW_ICL_ADJUST_BIT		BIT(7)
+#define DIE_ADC_SEL_BIT				BIT(6)
+#define THERMREG_SMB_ADC_SRC_EN_BIT		BIT(5)
+#define THERMREG_CONNECTOR_ADC_SRC_EN_BIT	BIT(4)
+#define SKIN_ADC_CFG_BIT			BIT(3)
+#define THERMREG_SKIN_ADC_SRC_EN_BIT		BIT(2)
+#define THERMREG_DIE_ADC_SRC_EN_BIT		BIT(1)
+#define THERMREG_DIE_CMP_SRC_EN_BIT		BIT(0)
 
 #define MISC_SMB_CFG_REG			(MISC_BASE + 0x90)
 #define SMB_EN_SEL_BIT				BIT(4)

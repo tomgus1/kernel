@@ -38,6 +38,20 @@ First Level Node - LCDB module
 		    the vph_pwr_2p5_ok signal required for
 		    turning on the LCDB module.
 
+- qcom,voltage-step-ramp
+	Usage:      optional
+	Value type: <bool>
+	Definition:  Required only if the voltage needs to be set in the
+		     steps of 500 mV starting from the 4500 mV. This needs
+		     to be enabled only on platforms where voltage needs to
+		     be ramped up with multiple steps.
+
+- qcom,pwrdn-delay-ms
+	Usage:      optional
+	Value type: <u32>
+	Definition:  Required to control the LDO power down delay.
+		     Possible values are 0, 1, 4, 8.
+
 Touch-to-wake (TTW) properties:
 
 TTW supports 2 modes of operation - HW and SW. In the HW mode the enable/disable

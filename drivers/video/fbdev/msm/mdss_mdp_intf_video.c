@@ -1120,6 +1120,7 @@ static void mdss_mdp_video_vsync_intr_done(void *arg)
 	struct mdss_mdp_video_ctx *ctx = ctl->intf_ctx[MASTER_CTX];
 	struct mdss_mdp_vsync_handler *tmp;
 	ktime_t vsync_time;
+	u32 ctl_flush_bits = 0;
 
 	if (!ctx) {
 		pr_err("invalid ctx\n");
@@ -1131,8 +1132,9 @@ static void mdss_mdp_video_vsync_intr_done(void *arg)
 
 	MDSS_XLOG(ctl->num, ctl->vsync_cnt, ctl->vsync_cnt);
 
-	pr_debug("intr ctl=%d vsync cnt=%u vsync_time=%d\n",
-		 ctl->num, ctl->vsync_cnt, (int)ktime_to_ms(vsync_time));
+	pr_debug("intr ctl=%d vsync cnt=%u vsync_time=%d ctl_flush=%d\n",
+		 ctl->num, ctl->vsync_cnt, (int)ktime_to_ms(vsync_time),
+		 ctl_flush_bits);
 
 	ctx->polling_en = false;
 	complete_all(&ctx->vsync_comp);
@@ -1916,7 +1918,7 @@ static void mdss_mdp_fetch_start_config(struct mdss_mdp_video_ctx *ctx,
 
 	mdata = ctl->mdata;
 
-	pinfo->prg_fet = mdss_mdp_get_prefetch_lines(pinfo);
+	pinfo->prg_fet = mdss_mdp_get_prefetch_lines(pinfo, true);
 	if (!pinfo->prg_fet) {
 		pr_debug("programmable fetch is not needed/supported\n");
 
@@ -1935,7 +1937,7 @@ static void mdss_mdp_fetch_start_config(struct mdss_mdp_video_ctx *ctx,
 	 * Fetch should always be outside the active lines. If the fetching
 	 * is programmed within active region, hardware behavior is unknown.
 	 */
-	v_total = mdss_panel_get_vtotal(pinfo);
+	v_total = mdss_panel_get_vtotal_fixed(pinfo);
 	h_total = mdss_panel_get_htotal(pinfo, true);
 
 	fetch_start = (v_total - pinfo->prg_fet) * h_total + 1;
