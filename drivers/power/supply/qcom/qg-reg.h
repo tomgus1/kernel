@@ -41,6 +41,9 @@
 #define QG_DATA_CTL1_REG			0x41
 #define MASTER_HOLD_OR_CLR_BIT			BIT(0)
 
+#define QG_DATA_CTL2_REG			0x42
+#define BURST_AVG_HOLD_FOR_READ_BIT		BIT(0)
+
 #define QG_MODE_CTL1_REG			0x43
 #define PARALLEL_IBAT_SENSE_EN_BIT		BIT(7)
 
@@ -97,6 +100,8 @@
 #define QG_LAST_ADC_V_DATA0_REG			0xC0
 #define QG_LAST_ADC_I_DATA0_REG			0xC2
 
+#define QG_LAST_BURST_AVG_I_DATA0_REG		0xC6
+
 #define QG_LAST_S3_SLEEP_V_DATA0_REG		0xCC
 
 /* SDAM offsets */
@@ -116,6 +121,7 @@
 #define QG_SDAM_MAX_OFFSET			0xA4
 
 /* Below offset is used by PBS */
+#define QG_SDAM_SEQ_OFFSET			0xBB /* 1-byte 0xBB */
 #define QG_SDAM_PON_OCV_OFFSET			0xBC /* 2-byte 0xBC-0xBD */
 
 #endif

@@ -210,6 +210,7 @@ static int uart_port_startup(struct tty_struct *tty, struct uart_state *state,
 		 */
 		free_page(page);
 	}
+	uart_port_unlock(uport, flags);
 
 	retval = uport->ops->startup(uport);
 	if (retval == 0) {

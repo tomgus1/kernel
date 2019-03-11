@@ -65,6 +65,7 @@
 #define KGSL_CONTEXT_TYPE_CL		2
 #define KGSL_CONTEXT_TYPE_C2D		3
 #define KGSL_CONTEXT_TYPE_RS		4
+#define KGSL_CONTEXT_TYPE_VK		5
 #define KGSL_CONTEXT_TYPE_UNKNOWN	0x1E
 
 #define KGSL_CONTEXT_INVALIDATE_ON_FAULT 0x10000000
@@ -333,6 +334,8 @@ enum kgsl_timestamp_type {
 #define KGSL_PROP_DEVICE_QTIMER		0x20
 #define KGSL_PROP_L3_PWR_CONSTRAINT     0x22
 #define KGSL_PROP_GPU_FORCE_ON		0x25
+#define KGSL_PROP_SECURE_BUFFER_ALIGNMENT 0x26
+#define KGSL_PROP_SECURE_CTXT_SUPPORT 0x27
 
 struct kgsl_shadowprop {
 	unsigned long gpuaddr;

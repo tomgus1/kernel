@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2017 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2018 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -115,6 +115,11 @@ module_param_named(
 static int __try_sink_enabled;
 module_param_named(
 	try_sink_enabled, __try_sink_enabled, int, 0600
+);
+
+static int __audio_headset_drp_wait_ms = 100;
+	module_param_named(
+	audio_headset_drp_wait_ms, __audio_headset_drp_wait_ms, int, 0600
 );
 
 static irqreturn_t smb138x_handle_slave_chg_state_change(int irq, void *data)
@@ -1260,7 +1265,9 @@ static irqreturn_t smb138x_handle_temperature_change(int irq, void *data)
 	struct smb_irq_data *irq_data = data;
 	struct smb138x *chip = irq_data->parent_data;
 
-	power_supply_changed(chip->parallel_psy);
+	if (chip->parallel_psy)
+		power_supply_changed(chip->parallel_psy);
+
 	return IRQ_HANDLED;
 }
 
@@ -1786,6 +1793,7 @@ static int smb138x_probe(struct platform_device *pdev)
 	chip->chg.try_sink_enabled = &__try_sink_enabled;
 	chip->chg.irq_info = smb138x_irqs;
 	chip->chg.name = "SMB";
+	chip->chg.audio_headset_drp_wait_ms = &__audio_headset_drp_wait_ms;
 
 	chip->chg.regmap = dev_get_regmap(chip->chg.dev->parent, NULL);
 	if (!chip->chg.regmap) {

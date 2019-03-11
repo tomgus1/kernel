@@ -72,6 +72,12 @@
 	ibb-supply = <&lcdb_ncp_vreg>;
 };
 
+&dsi_r63417_truly_1080_cmd_display {
+	vddio-supply = <&pm660_l11>;
+	lab-supply = <&lcdb_ldo_vreg>;
+	ibb-supply = <&lcdb_ncp_vreg>;
+};
+
 &dsi_dual_test_cmd_display {
 	/delete-property/ vddio-supply;
 	/delete-property/ lab-supply;
@@ -263,6 +269,10 @@
 &pil_modem {
 	/delete-property/ vdd_cx-supply;
 	/delete-property/ vdd_mx-supply;
+};
+
+&gpu_cx_gdsc {
+	/delete-property/ parent-supply;
 };
 
 &gpu_gx_gdsc {

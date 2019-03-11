@@ -458,7 +458,7 @@ static void handle_critical_trips(struct thermal_zone_device *tz,
 	}
 }
 
-void handle_thermal_trip(struct thermal_zone_device *tz, int trip)
+static void handle_thermal_trip(struct thermal_zone_device *tz, int trip)
 {
 	enum thermal_trip_type type;
 
@@ -576,7 +576,7 @@ exit:
 }
 EXPORT_SYMBOL_GPL(thermal_zone_set_trips);
 
-static void update_temperature(struct thermal_zone_device *tz)
+static void store_temperature(struct thermal_zone_device *tz, int temp)
 {
 	int temp, ret;
 

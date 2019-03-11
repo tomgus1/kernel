@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -40,6 +40,7 @@
 #include "diag_mux.h"
 #include "diag_ipc_logging.h"
 #include "diagfwd_peripheral.h"
+#include "diag_pcie.h"
 
 #include <linux/coresight-stm.h>
 #include <linux/kernel.h>
@@ -86,6 +87,8 @@ module_param(poolsize_user, uint, 0000);
  */
 static unsigned int itemsize_usb_apps = sizeof(struct diag_request);
 static unsigned int poolsize_usb_apps = 10;
+static unsigned int itemsize_pcie_apps = sizeof(struct mhi_req);
+static unsigned int poolsize_pcie_apps = 10;
 module_param(poolsize_usb_apps, uint, 0000);
 
 /* Used for DCI client buffers. Don't expose itemsize as it is constant. */
@@ -162,7 +165,7 @@ static struct mutex apps_data_mutex;
 
 #define DIAGPKT_MAX_DELAYED_RSP 0xFFFF
 
-#ifdef DIAG_DEBUG
+#ifdef CONFIG_IPC_LOGGING
 uint16_t diag_debug_mask;
 void *diag_ipc_log;
 #endif
@@ -201,6 +204,7 @@ do {								\
 	if ((count < ret+length) || (copy_to_user(buf,		\
 			(void *)&data, length))) {		\
 		ret = -EFAULT;					\
+		break;							\
 	}							\
 	ret += length;						\
 } while (0)
@@ -213,17 +217,19 @@ static void drain_timer_func(unsigned long data)
 static void diag_drain_apps_data(struct diag_apps_data_t *data)
 {
 	int err = 0;
+	unsigned long flags;
 
 	if (!data || !data->buf)
 		return;
 
 	err = diag_mux_write(DIAG_LOCAL_PROC, data->buf, data->len,
 			     data->ctxt);
+	spin_lock_irqsave(&driver->diagmem_lock, flags);
 	if (err)
 		diagmem_free(driver, data->buf, POOL_TYPE_HDLC);
-
 	data->buf = NULL;
 	data->len = 0;
+	spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 }
 
 void diag_update_user_client_work_fn(struct work_struct *work)
@@ -294,6 +300,8 @@ static void diag_mempool_init(void)
 	diagmem_init(driver, POOL_TYPE_HDLC);
 	diagmem_init(driver, POOL_TYPE_USER);
 	diagmem_init(driver, POOL_TYPE_DCI);
+
+	spin_lock_init(&driver->diagmem_lock);
 }
 
 static void diag_mempool_exit(void)
@@ -451,8 +459,19 @@ static void diag_close_logging_process(const int pid)
 	session_info = diag_md_session_get_pid(pid);
 	if (!session_info) {
 		mutex_unlock(&driver->md_session_lock);
+		if (driver->pcie_transport_def == DIAG_ROUTE_TO_PCIE)
+			params.req_mode = PCIE_MODE;
+		else
+			params.req_mode = USB_MODE;
+		params.mode_param = 0;
+		params.pd_mask = 0;
+		params.peripheral_mask = DIAG_CON_ALL;
+		mutex_lock(&driver->diagchar_mutex);
+		diag_switch_logging(&params);
+		mutex_unlock(&driver->diagchar_mutex);
 		return;
 	}
+
 	session_mask = session_info->peripheral_mask;
 	mutex_unlock(&driver->md_session_lock);
 
@@ -467,7 +486,11 @@ static void diag_close_logging_process(const int pid)
 		if (MD_PERIPHERAL_MASK(i) & session_mask)
 			diag_mux_close_peripheral(DIAG_LOCAL_PROC, i);
 
-	params.req_mode = USB_MODE;
+	if (driver->transport_set == DIAG_ROUTE_TO_PCIE)
+		params.req_mode = PCIE_MODE;
+	else
+		params.req_mode = USB_MODE;
+
 	params.mode_param = 0;
 	params.pd_mask = 0;
 	params.peripheral_mask = p_mask;
@@ -552,8 +575,8 @@ static int diagchar_close(struct inode *inode, struct file *file)
 {
 	int ret;
 
-	DIAG_LOG(DIAG_DEBUG_USERSPACE, "diag: process exit %s\n",
-		current->comm);
+	DIAG_LOG(DIAG_DEBUG_USERSPACE, "diag: %s process exit with pid = %d\n",
+		current->comm, current->tgid);
 	ret = diag_remove_client_entry(file);
 
 	return ret;
@@ -1264,7 +1287,8 @@ static void diag_md_session_exit(void)
 			diag_log_mask_free(session_info->log_mask);
 			kfree(session_info->log_mask);
 			session_info->log_mask = NULL;
-			diag_msg_mask_free(session_info->msg_mask);
+			diag_msg_mask_free(session_info->msg_mask,
+				session_info);
 			kfree(session_info->msg_mask);
 			session_info->msg_mask = NULL;
 			diag_event_mask_free(session_info->event_mask);
@@ -1335,7 +1359,9 @@ int diag_md_session_create(int mode, int peripheral_mask, int proc)
 			 "return value of event copy. err %d\n", err);
 		goto fail_peripheral;
 	}
-	err = diag_msg_mask_copy(new_session->msg_mask, &msg_mask);
+	new_session->msg_mask_tbl_count = 0;
+	err = diag_msg_mask_copy(new_session, new_session->msg_mask,
+		&msg_mask);
 	if (err) {
 		DIAG_LOG(DIAG_DEBUG_USERSPACE,
 			 "return value of msg copy. err %d\n", err);
@@ -1371,7 +1397,8 @@ fail_peripheral:
 	diag_event_mask_free(new_session->event_mask);
 	kfree(new_session->event_mask);
 	new_session->event_mask = NULL;
-	diag_msg_mask_free(new_session->msg_mask);
+	diag_msg_mask_free(new_session->msg_mask,
+		new_session);
 	kfree(new_session->msg_mask);
 	new_session->msg_mask = NULL;
 	kfree(new_session);
@@ -1399,7 +1426,8 @@ static void diag_md_session_close(int pid)
 	diag_log_mask_free(session_info->log_mask);
 	kfree(session_info->log_mask);
 	session_info->log_mask = NULL;
-	diag_msg_mask_free(session_info->msg_mask);
+	diag_msg_mask_free(session_info->msg_mask,
+		session_info);
 	kfree(session_info->msg_mask);
 	session_info->msg_mask = NULL;
 	diag_event_mask_free(session_info->event_mask);
@@ -1483,7 +1511,8 @@ static int diag_md_peripheral_switch(int pid,
 	session_info = diag_md_session_get_pid(pid);
 	if (!session_info)
 		return -EINVAL;
-	if (req_mode != DIAG_USB_MODE || req_mode != DIAG_MEMORY_DEVICE_MODE)
+	if (req_mode != DIAG_USB_MODE || req_mode != DIAG_MEMORY_DEVICE_MODE ||
+		req_mode != DIAG_PCIE_MODE)
 		return -EINVAL;
 
 	/*
@@ -1494,7 +1523,7 @@ static int diag_md_peripheral_switch(int pid,
 		bit = MD_PERIPHERAL_MASK(i) & peripheral_mask;
 		if (!bit)
 			continue;
-		if (req_mode == DIAG_USB_MODE) {
+		if (req_mode == DIAG_USB_MODE || req_mode == DIAG_PCIE_MODE) {
 			if (driver->md_session_map[i] != session_info)
 				return -EINVAL;
 			driver->md_session_map[i] = NULL;
@@ -1532,18 +1561,26 @@ static int diag_md_session_check(int curr_mode, int req_mode,
 	switch (curr_mode) {
 	case DIAG_USB_MODE:
 	case DIAG_MEMORY_DEVICE_MODE:
+	case DIAG_PCIE_MODE:
 	case DIAG_MULTI_MODE:
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	if (req_mode != DIAG_USB_MODE && req_mode != DIAG_MEMORY_DEVICE_MODE)
+	if (req_mode != DIAG_USB_MODE && req_mode != DIAG_MEMORY_DEVICE_MODE &&
+		req_mode != DIAG_PCIE_MODE)
 		return -EINVAL;
 
-	if (req_mode == DIAG_USB_MODE) {
-		if (curr_mode == DIAG_USB_MODE)
-			return 0;
+	if (curr_mode == req_mode)
+		return 0;
+
+	if ((req_mode ==  DIAG_USB_MODE && curr_mode == DIAG_PCIE_MODE) ||
+		(req_mode == DIAG_PCIE_MODE && curr_mode == DIAG_USB_MODE)) {
+		*change_mode = 1;
+		return 0;
+	} else if ((req_mode == DIAG_USB_MODE || req_mode == DIAG_PCIE_MODE)
+		&& curr_mode == DIAG_MEMORY_DEVICE_MODE) {
 		mutex_lock(&driver->md_session_lock);
 		if (driver->md_session_mode == DIAG_MD_NONE
 		    && driver->md_session_mask == 0 && driver->logging_mask) {
@@ -1593,7 +1630,7 @@ static int diag_md_session_check(int curr_mode, int req_mode,
 		/* If all peripherals are being set to USB Mode, call close */
 		if (~change_mask & peripheral_mask) {
 			err = diag_md_peripheral_switch(current->tgid,
-					change_mask, DIAG_USB_MODE);
+					change_mask, req_mode);
 		} else
 			diag_md_session_close(current->tgid);
 		mutex_unlock(&driver->md_session_lock);
@@ -1617,7 +1654,11 @@ static int diag_md_session_check(int curr_mode, int req_mode,
 				mutex_unlock(&driver->md_session_lock);
 				return -EINVAL;
 			}
-			err = diag_md_peripheral_switch(current->tgid,
+			if (driver->pcie_transport_def == DIAG_ROUTE_TO_PCIE)
+				err = diag_md_peripheral_switch(current->tgid,
+					change_mask, DIAG_PCIE_MODE);
+			else
+				err = diag_md_peripheral_switch(current->tgid,
 					change_mask, DIAG_USB_MODE);
 			mutex_unlock(&driver->md_session_lock);
 		} else {
@@ -1704,13 +1745,17 @@ static void diag_switch_logging_clear_mask(
 	case USB_MODE:
 		new_mode = DIAG_USB_MODE;
 		break;
+	case PCIE_MODE:
+		new_mode = DIAG_PCIE_MODE;
+		break;
 	default:
 		DIAG_LOG(DIAG_DEBUG_USERSPACE,
 			"Request to switch to invalid mode: %d\n",
 			param->req_mode);
 		return;
 	}
-	if ((new_mode == DIAG_USB_MODE) && diag_mask_clear_param)
+	if ((new_mode == DIAG_USB_MODE || new_mode == DIAG_PCIE_MODE) &&
+			diag_mask_clear_param)
 		diag_clear_masks(pid);
 
 }
@@ -1805,6 +1850,9 @@ static int diag_switch_logging(struct diag_logging_mode_param_t *param)
 	case USB_MODE:
 		new_mode = DIAG_USB_MODE;
 		break;
+	case PCIE_MODE:
+		new_mode = DIAG_PCIE_MODE;
+		break;
 	default:
 		pr_err("diag: In %s, request to switch to invalid mode: %d\n",
 		       __func__, param->req_mode);
@@ -1840,6 +1888,15 @@ static int diag_switch_logging(struct diag_logging_mode_param_t *param)
 	}
 	driver->logging_mode = new_mode;
 	driver->logging_mask = peripheral_mask;
+	if (new_mode == DIAG_PCIE_MODE) {
+		driver->transport_set = DIAG_ROUTE_TO_PCIE;
+		diagmem_setsize(POOL_TYPE_MUX_APPS, itemsize_pcie_apps,
+			poolsize_pcie_apps + 1 + (NUM_PERIPHERALS * 6));
+	} else if (new_mode == DIAG_USB_MODE) {
+		driver->transport_set = DIAG_ROUTE_TO_USB;
+		diagmem_setsize(POOL_TYPE_MUX_APPS, itemsize_usb_apps,
+			poolsize_usb_apps + 1 + (NUM_PERIPHERALS * 6));
+	}
 	DIAG_LOG(DIAG_DEBUG_USERSPACE,
 		"Switch logging to %d mask:%0x\n", new_mode, peripheral_mask);
 
@@ -1853,7 +1910,7 @@ static int diag_switch_logging(struct diag_logging_mode_param_t *param)
 	}
 
 	if (!(new_mode == DIAG_MEMORY_DEVICE_MODE &&
-	      curr_mode == DIAG_USB_MODE)) {
+	      (curr_mode == DIAG_USB_MODE || curr_mode == DIAG_PCIE_MODE))) {
 		queue_work(driver->diag_real_time_wq,
 			   &driver->diag_real_time_work);
 	}
@@ -2739,6 +2796,7 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 	struct diag_apps_data_t *data = &hdlc_data;
 	struct diag_send_desc_type send = { NULL, NULL, DIAG_STATE_START, 0 };
 	struct diag_hdlc_dest_type enc = { NULL, NULL, 0 };
+	unsigned long flags;
 	/*
 	 * The maximum encoded size of the buffer can be atmost twice the length
 	 * of the packet. Add three bytes foe footer - 16 bit CRC (2 bytes) +
@@ -2843,10 +2901,11 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 	return PKT_ALLOC;
 
 fail_free_buf:
+	spin_lock_irqsave(&driver->diagmem_lock, flags);
 	diagmem_free(driver, data->buf, POOL_TYPE_HDLC);
 	data->buf = NULL;
 	data->len = 0;
-
+	spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 fail_ret:
 	return ret;
 }
@@ -2858,6 +2917,7 @@ static int diag_process_apps_data_non_hdlc(unsigned char *buf, int len,
 	int ret = PKT_DROP;
 	struct diag_pkt_frame_t header;
 	struct diag_apps_data_t *data = &non_hdlc_data;
+	unsigned long flags;
 	/*
 	 * The maximum packet size, when the data is non hdlc encoded is equal
 	 * to the size of the packet frame header and the length. Add 1 for the
@@ -2922,10 +2982,11 @@ static int diag_process_apps_data_non_hdlc(unsigned char *buf, int len,
 	return PKT_ALLOC;
 
 fail_free_buf:
+	spin_lock_irqsave(&driver->diagmem_lock, flags);
 	diagmem_free(driver, data->buf, POOL_TYPE_HDLC);
 	data->buf = NULL;
 	data->len = 0;
-
+	spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 fail_ret:
 	return ret;
 }
@@ -3257,6 +3318,8 @@ static ssize_t diagchar_read(struct file *file, char __user *buf, size_t count,
 	int exit_stat = 0;
 	int write_len = 0;
 	struct diag_md_session_t *session_info = NULL;
+	struct pid *pid_struct = NULL;
+	struct task_struct *task_s = NULL;
 
 	mutex_lock(&driver->diagchar_mutex);
 	for (i = 0; i < driver->num_clients; i++)
@@ -3501,8 +3564,19 @@ exit:
 		list_for_each_safe(start, temp, &driver->dci_client_list) {
 			entry = list_entry(start, struct diag_dci_client_tbl,
 									track);
-			if (entry->client->tgid != current->tgid)
+			pid_struct = find_get_pid(entry->tgid);
+			if (!pid_struct)
 				continue;
+			task_s = get_pid_task(pid_struct, PIDTYPE_PID);
+			if (!task_s) {
+				DIAG_LOG(DIAG_DEBUG_DCI,
+				"diag: valid task doesn't exist for pid = %d\n",
+				entry->tgid);
+				continue;
+			}
+			if (task_s == entry->client)
+				if (entry->client->tgid != current->tgid)
+					continue;
 			if (!entry->in_service)
 				continue;
 			if (copy_to_user(buf + ret, &data_type, sizeof(int))) {
@@ -3569,7 +3643,9 @@ static ssize_t diagchar_write(struct file *file, const char __user *buf,
 		return -EIO;
 	}
 
-	if (driver->logging_mode == DIAG_USB_MODE && !driver->usb_connected) {
+	if ((driver->logging_mode == DIAG_USB_MODE && !driver->usb_connected) ||
+		(driver->logging_mode == DIAG_PCIE_MODE &&
+		!driver->pcie_connected)) {
 		if (!((pkt_type == DCI_DATA_TYPE) ||
 		    (pkt_type == DCI_PKT_TYPE) ||
 		    (pkt_type & DATA_TYPE_DCI_LOG) ||
@@ -3607,8 +3683,10 @@ static ssize_t diagchar_write(struct file *file, const char __user *buf,
 		 * stream. If USB is not connected and we are not in memory
 		 * device mode, we should not process these logs/events.
 		 */
-		if (pkt_type && driver->logging_mode == DIAG_USB_MODE &&
-		    !driver->usb_connected)
+		if (pkt_type && ((driver->logging_mode == DIAG_USB_MODE &&
+		    !driver->usb_connected) ||
+			(driver->logging_mode == DIAG_PCIE_MODE &&
+			 !driver->pcie_connected)))
 			return err;
 	}
 
@@ -3910,6 +3988,39 @@ static int diagchar_cleanup(void)
 	return 0;
 }
 
+#ifdef CONFIG_DIAG_OVER_PCIE
+static void diag_init_transport(void)
+{
+	driver->transport_set = DIAG_ROUTE_TO_PCIE;
+	driver->pcie_transport_def = DIAG_ROUTE_TO_PCIE;
+	driver->logging_mode = DIAG_PCIE_MODE;
+	/*
+	 * POOL_TYPE_MUX_APPS is for the buffers in the Diag MUX layer.
+	 * The number of buffers encompasses Diag data generated on
+	 * the Apss processor + 1 for the responses generated
+	 * exclusively on the Apps processor + data from data channels
+	 *(4 channels periperipheral) + data from command channels (2)
+	 */
+	diagmem_setsize(POOL_TYPE_MUX_APPS, itemsize_pcie_apps,
+		poolsize_pcie_apps + 1 + (NUM_PERIPHERALS * 6));
+}
+#else
+static void diag_init_transport(void)
+{
+	driver->transport_set = DIAG_ROUTE_TO_USB;
+	driver->pcie_transport_def = DIAG_ROUTE_TO_USB;
+	driver->logging_mode = DIAG_USB_MODE;
+	/*
+	 * POOL_TYPE_MUX_APPS is for the buffers in the Diag MUX layer.
+	 * The number of buffers encompasses Diag data generated on
+	 * the Apss processor + 1 for the responses generated
+	 * exclusively on the Apps processor + data from data channels
+	 *(4 channels periperipheral) + data from command channels (2)
+	 */
+	diagmem_setsize(POOL_TYPE_MUX_APPS, itemsize_usb_apps,
+		poolsize_usb_apps + 1 + (NUM_PERIPHERALS * 6));
+}
+#endif
 static int __init diagchar_init(void)
 {
 	dev_t dev;
@@ -3923,6 +4034,9 @@ static int __init diagchar_init(void)
 	kmemleak_not_leak(driver);
 
 	timer_in_progress = 0;
+	diag_init_transport();
+	DIAG_LOG(DIAG_DEBUG_MUX, "Transport type set to %d\n",
+		driver->transport_set);
 	driver->delayed_rsp_id = 0;
 	driver->hdlc_disabled = 0;
 	driver->dci_state = DIAG_DCI_NO_ERROR;
@@ -3934,17 +4048,8 @@ static int __init diagchar_init(void)
 	driver->poolsize_hdlc = poolsize_hdlc;
 	driver->poolsize_dci = poolsize_dci;
 	driver->poolsize_user = poolsize_user;
-	/*
-	 * POOL_TYPE_MUX_APPS is for the buffers in the Diag MUX layer.
-	 * The number of buffers encompasses Diag data generated on
-	 * the Apss processor + 1 for the responses generated exclusively on
-	 * the Apps processor + data from data channels (4 channels per
-	 * peripheral) + data from command channels (2)
-	 */
-	diagmem_setsize(POOL_TYPE_MUX_APPS, itemsize_usb_apps,
-			poolsize_usb_apps + 1 + (NUM_PERIPHERALS * 6));
 	driver->num_clients = max_clients;
-	driver->logging_mode = DIAG_USB_MODE;
+
 	for (i = 0; i < NUM_UPD; i++) {
 		driver->pd_logging_mode[i] = 0;
 		driver->pd_session_clear[i] = 0;

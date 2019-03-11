@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,9 +14,8 @@
 #define __MHI_H
 
 #include <linux/msm_ep_pcie.h>
-#include <linux/types.h>
 #include <linux/ipc_logging.h>
-#include <linux/dma-mapping.h>
+#include <linux/msm_mhi_dev.h>
 
 /**
  * MHI control data structures alloted by the host, including
@@ -547,6 +546,7 @@ enum mhi_msg_level {
 	MHI_MSG_reserved = 0x80000000
 };
 
+extern uint32_t bhi_imgtxdb;
 extern enum mhi_msg_level mhi_msg_lvl;
 extern enum mhi_msg_level mhi_ipc_msg_lvl;
 extern void *mhi_ipc_log;
@@ -557,7 +557,7 @@ extern void *mhi_ipc_log;
 	} \
 	if (mhi_ipc_log && (_msg_lvl >= mhi_ipc_msg_lvl)) { \
 		ipc_log_string(mhi_ipc_log,                     \
-			"[%s] " _msg, __func__, ##__VA_ARGS__);     \
+		"[0x%x %s] " _msg, bhi_imgtxdb, __func__, ##__VA_ARGS__);     \
 	} \
 } while (0)
 
@@ -940,7 +940,7 @@ int mhi_dev_mmio_read_chdb_status_interrupts(struct mhi_dev *dev);
 int mhi_dev_mmio_enable_erdb_interrupts(struct mhi_dev *dev);
 
 /**
- * mhi_dev_mmio_mask_erdb_interrupts() - Mask all Event doorbell
+ *mhi_dev_mmio_mask_erdb_interrupts() - Mask all Event doorbell
  *		interrupts.
  * @dev:	MHI device structure.
  */
@@ -952,6 +952,12 @@ int mhi_dev_mmio_mask_erdb_interrupts(struct mhi_dev *dev);
  * @dev:	MHI device structure.
  */
 int mhi_dev_mmio_read_erdb_status_interrupts(struct mhi_dev *dev);
+
+/**
+ * mhi_dev_mmio_mask_interrupts() - Mask all MHI interrupts.
+ * @dev:	MHI device structure.
+ */
+void mhi_dev_mmio_mask_interrupts(struct mhi_dev *dev);
 
 /**
  * mhi_dev_mmio_clear_interrupts() - Clear all doorbell interrupts.

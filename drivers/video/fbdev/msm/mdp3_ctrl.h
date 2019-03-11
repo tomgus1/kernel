@@ -35,6 +35,9 @@ struct mdp3_buffer_queue {
 	int pop_idx;
 };
 
+/* struct mdp3_session_data is MDP3 fb private data */
+#define mfd_to_mdp3_data(mfd)	(mfd->mdp.private1)
+
 struct mdp3_session_data {
 	struct mutex lock;
 	int status;
@@ -44,7 +47,6 @@ struct mdp3_session_data {
 	struct msm_fb_data_type *mfd;
 	ktime_t vsync_time;
 	struct timer_list vsync_timer;
-	int vsync_period;
 	struct kernfs_node *vsync_event_sd;
 	struct mdp_overlay overlay;
 	struct mdp_overlay req_overlay;

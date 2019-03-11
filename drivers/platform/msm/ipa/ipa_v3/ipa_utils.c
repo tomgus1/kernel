@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1444,6 +1444,18 @@ static const struct ipa_ep_configuration ipa3_ep_mapping
 			IPA_DPS_HPS_SEQ_TYPE_INVALID,
 			QMB_MASTER_SELECT_DDR,
 			{ 16, 5, 9, 9, IPA_EE_Q6, GSI_USE_PREFETCH_BUFS } },
+	[IPA_4_0_MHI][IPA_CLIENT_USB_DPL_CONS]        = {
+			true, IPA_v4_0_MHI_GROUP_DDR,
+			false,
+			IPA_DPS_HPS_SEQ_TYPE_INVALID,
+			QMB_MASTER_SELECT_DDR,
+			{ 15, 7, 5, 5, IPA_EE_AP, GSI_ESCAPE_BUF_ONLY } },
+	[IPA_4_0_MHI][IPA_CLIENT_MHI_DPL_CONS]        = {
+			true, IPA_v4_0_MHI_GROUP_PCIE,
+			false,
+			IPA_DPS_HPS_SEQ_TYPE_INVALID,
+			QMB_MASTER_SELECT_PCIE,
+			{ 12, 2, 5, 5, IPA_EE_AP, GSI_ESCAPE_BUF_ONLY } },
 	/* Only for test purpose */
 	[IPA_4_0_MHI][IPA_CLIENT_TEST_CONS]           = {
 			true, IPA_v4_0_GROUP_UL_DL,
@@ -1994,6 +2006,29 @@ static void ipa_comp_cfg(void)
 		IPADBG("ipa_qmb_select_by_address_cons_en = %d\n",
 				comp_cfg.ipa_qmb_select_by_address_cons_en);
 	}
+
+	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_0) {
+		ipahal_read_reg_fields(IPA_COMP_CFG, &comp_cfg);
+		IPADBG("Before comp config\n");
+		IPADBG("gsi_multi_inorder_rd_dis = %d\n",
+			comp_cfg.gsi_multi_inorder_rd_dis);
+
+		IPADBG("gsi_multi_inorder_wr_dis = %d\n",
+			comp_cfg.gsi_multi_inorder_wr_dis);
+
+		comp_cfg.gsi_multi_inorder_rd_dis = true;
+		comp_cfg.gsi_multi_inorder_wr_dis = true;
+
+		ipahal_write_reg_fields(IPA_COMP_CFG, &comp_cfg);
+
+		ipahal_read_reg_fields(IPA_COMP_CFG, &comp_cfg);
+		IPADBG("After comp config\n");
+		IPADBG("gsi_multi_inorder_rd_dis = %d\n",
+			comp_cfg.gsi_multi_inorder_rd_dis);
+
+		IPADBG("gsi_multi_inorder_wr_dis = %d\n",
+			comp_cfg.gsi_multi_inorder_wr_dis);
+	}
 }
 
 /**
@@ -2266,7 +2301,7 @@ int ipa3_get_wlan_stats(struct ipa_get_wdi_sap_stats *wdi_sap_stats)
 		ipa3_ctx->uc_wdi_ctx.stats_notify(IPA_GET_WDI_SAP_STATS,
 			wdi_sap_stats);
 	} else {
-		IPAERR("uc_wdi_ctx.stats_notify NULL\n");
+		IPAERR_RL("uc_wdi_ctx.stats_notify NULL\n");
 		return -EFAULT;
 	}
 	return 0;
@@ -4413,7 +4448,7 @@ int ipa3_is_vlan_mode(enum ipa_vlan_ifaces iface, bool *res)
 		return -EINVAL;
 	}
 
-	if (iface < 0 || iface > IPA_VLAN_IF_MAX) {
+	if (iface < 0 || iface >= IPA_VLAN_IF_MAX) {
 		IPAERR("invalid iface %d\n", iface);
 		return -EINVAL;
 	}

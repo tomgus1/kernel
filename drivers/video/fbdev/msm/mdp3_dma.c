@@ -17,6 +17,7 @@
 #include "mdp3_dma.h"
 #include "mdp3_hwio.h"
 #include "mdss_debug.h"
+#include "mdp3_ctrl.h"
 
 #define DMA_STOP_POLL_SLEEP_US 1000
 #define DMA_STOP_POLL_TIMEOUT_US 200000
@@ -36,7 +37,13 @@ static void mdp3_vsync_intr_handler(int type, void *arg)
 	struct mdp3_notification vsync_client;
 	unsigned int wait_for_next_vs;
 
+	if (!dma) {
+		pr_err("dma is null\n");
+		return;
+	}
+
 	pr_debug("mdp3_vsync_intr_handler\n");
+	MDSS_XLOG(0x111, dma->vsync_period);
 	spin_lock(&dma->dma_lock);
 	vsync_client = dma->vsync_client;
 	wait_for_next_vs = !dma->vsync_status;
@@ -57,6 +64,11 @@ static void mdp3_dma_done_intr_handler(int type, void *arg)
 	struct mdp3_dma *dma = (struct mdp3_dma *)arg;
 	struct mdp3_notification dma_client;
 
+	if (!dma) {
+		pr_err("dma is null\n");
+		return;
+	}
+
 	pr_debug("mdp3_dma_done_intr_handler\n");
 	spin_lock(&dma->dma_lock);
 	dma_client = dma->dma_notifier_client;
@@ -71,6 +83,11 @@ static void mdp3_hist_done_intr_handler(int type, void *arg)
 {
 	struct mdp3_dma *dma = (struct mdp3_dma *)arg;
 	u32 isr, mask;
+
+	if (!dma) {
+		pr_err("dma is null\n");
+		return;
+	}
 
 	isr = MDP3_REG_READ(MDP3_REG_DMA_P_HIST_INTR_STATUS);
 	mask = MDP3_REG_READ(MDP3_REG_DMA_P_HIST_INTR_ENABLE);
@@ -264,7 +281,7 @@ int mdp3_dma_sync_config(struct mdp3_dma *dma,
 
 	vsync_clk_speed_hz = MDP_VSYNC_CLK_RATE;
 
-	cfg = total_lines << VSYNC_TOTAL_LINES_SHIFT;
+	cfg = te->sync_cfg_height << VSYNC_TOTAL_LINES_SHIFT;
 	total_lines *= te->frame_rate;
 
 	vclks_line = (total_lines) ? vsync_clk_speed_hz / total_lines : 0;
@@ -658,7 +675,7 @@ static int mdp3_dmap_update(struct mdp3_dma *dma, void *buf,
 			ATRACE_BEGIN("mdp3_wait_for_dma_comp");
 retry_dma_done:
 			rc = wait_for_completion_timeout(&dma->dma_comp,
-				KOFF_TIMEOUT);
+			 dma_timeout_value(dma));
 			if (rc <= 0 && --retry_count) {
 				int  vsync_status;
 
@@ -671,7 +688,11 @@ retry_dma_done:
 				}
 				rc = -1;
 			}
-				ATRACE_END("mdp3_wait_for_dma_comp");
+			ATRACE_END("mdp3_wait_for_dma_comp");
+			if (rc <= 0 && retry_count == 0) {
+				MDSS_XLOG_TOUT_HANDLER("mdp", "vbif",
+						"dsi0_ctrl", "dsi0_phy");
+			}
 		}
 	}
 	if (dma->update_src_cfg) {
@@ -1047,6 +1068,21 @@ static int mdp3_dma_stop(struct mdp3_dma *dma, struct mdp3_intf *intf)
 
 	init_completion(&dma->dma_comp);
 	dma->vsync_client.handler = NULL;
+
+	/*
+	 * Interrupts are disabled.
+	 * Check for blocked dma done and vsync interrupt.
+	 * Flush items waiting for interrupts.
+	 */
+	if (dma->output_config.out_sel == MDP3_DMA_OUTPUT_SEL_DSI_CMD) {
+		if (atomic_read(&dma->session->dma_done_cnt))
+			mdp3_flush_dma_done(dma->session);
+		if (dma->session->retire_cnt) {
+			mdp3_vsync_retire_signal(dma->session->mfd,
+			dma->session->retire_cnt);
+		}
+	}
+
 	return ret;
 }
 
