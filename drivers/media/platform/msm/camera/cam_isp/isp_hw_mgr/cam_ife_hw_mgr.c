@@ -29,6 +29,7 @@
 #include "cam_debug_util.h"
 #include "cam_cpas_api.h"
 #include "cam_mem_mgr_api.h"
+#include "cam_common_util.h"
 
 #define CAM_IFE_HW_ENTRIES_MAX  20
 
@@ -95,7 +96,8 @@ static int cam_ife_mgr_get_hw_caps(void *hw_mgr_priv,
 
 	CAM_DBG(CAM_ISP, "enter");
 
-	if (copy_from_user(&query_isp, (void __user *)query->caps_handle,
+	if (copy_from_user(&query_isp,
+		u64_to_user_ptr(query->caps_handle),
 		sizeof(struct cam_isp_query_cap_cmd))) {
 		rc = -EFAULT;
 		return rc;
@@ -114,8 +116,8 @@ static int cam_ife_mgr_get_hw_caps(void *hw_mgr_priv,
 		query_isp.dev_caps[i].hw_version.reserved = 0;
 	}
 
-	if (copy_to_user((void __user *)query->caps_handle, &query_isp,
-		sizeof(struct cam_isp_query_cap_cmd)))
+	if (copy_to_user(u64_to_user_ptr(query->caps_handle),
+		&query_isp, sizeof(struct cam_isp_query_cap_cmd)))
 		rc = -EFAULT;
 
 	CAM_DBG(CAM_ISP, "exit rc :%d", rc);
@@ -1468,8 +1470,8 @@ void cam_ife_cam_cdm_callback(uint32_t handle, void *userdata,
 	if (status == CAM_CDM_CB_STATUS_BL_SUCCESS) {
 		complete(&ctx->config_done_complete);
 		CAM_DBG(CAM_ISP,
-			"Called by CDM hdl=%x, udata=%pK, status=%d, cookie=%llu",
-			 handle, userdata, status, cookie);
+			"Called by CDM hdl=%x, udata=%pK, status=%d, cookie=%llu ctx_index=%d",
+			 handle, userdata, status, cookie, ctx->ctx_index);
 	} else {
 		CAM_WARN(CAM_ISP,
 			"Called by CDM hdl=%x, udata=%pK, status=%d, cookie=%llu",
@@ -1562,7 +1564,8 @@ static int cam_ife_mgr_acquire_hw(void *hw_mgr_priv,
 			goto free_res;
 		}
 
-		in_port = memdup_user((void __user *)isp_resource[i].res_hdl,
+		in_port = memdup_user(
+			u64_to_user_ptr(isp_resource[i].res_hdl),
 			isp_resource[i].length);
 		if (!IS_ERR(in_port)) {
 			in_port_length = sizeof(struct cam_isp_in_port_info) +
@@ -1783,15 +1786,15 @@ static int cam_ife_mgr_config_hw(void *hw_mgr_priv,
 				msecs_to_jiffies(30));
 			if (rc <= 0) {
 				CAM_ERR(CAM_ISP,
-					"config done completion timeout for req_id=%llu rc = %d",
-					cfg->request_id, rc);
+					"config done completion timeout for req_id=%llu rc=%d ctx_index %d",
+					cfg->request_id, rc, ctx->ctx_index);
 				if (rc == 0)
 					rc = -ETIMEDOUT;
 			} else {
 				rc = 0;
 				CAM_DBG(CAM_ISP,
-					"config done Success for req_id=%llu",
-					cfg->request_id);
+					"config done Success for req_id=%llu ctx_index %d",
+					cfg->request_id, ctx->ctx_index);
 			}
 		}
 	} else {
@@ -2162,7 +2165,8 @@ static int cam_ife_mgr_start_hw(void *hw_mgr_priv, void *start_hw_args)
 	struct cam_isp_stop_args          stop_isp;
 	struct cam_ife_hw_mgr_ctx        *ctx;
 	struct cam_ife_hw_mgr_res        *hw_mgr_res;
-	uint32_t                          i;
+	struct cam_isp_resource_node     *rsrc_node = NULL;
+	uint32_t                          i, camif_debug;
 
 	if (!hw_mgr_priv || !start_isp) {
 		CAM_ERR(CAM_ISP, "Invalid arguments");
@@ -2194,6 +2198,24 @@ static int cam_ife_mgr_start_hw(void *hw_mgr_priv, void *start_hw_args)
 				CAM_IFE_CSID_SET_CSID_DEBUG,
 				&g_ife_hw_mgr.debug_cfg.csid_debug,
 				sizeof(g_ife_hw_mgr.debug_cfg.csid_debug));
+	}
+
+	camif_debug = g_ife_hw_mgr.debug_cfg.camif_debug;
+	list_for_each_entry(hw_mgr_res, &ctx->res_list_ife_src, list) {
+		for (i = 0; i < CAM_ISP_HW_SPLIT_MAX; i++) {
+			if (!hw_mgr_res->hw_res[i])
+				continue;
+
+			rsrc_node = hw_mgr_res->hw_res[i];
+			if (rsrc_node->process_cmd && (rsrc_node->res_id ==
+				CAM_ISP_HW_VFE_IN_CAMIF)) {
+				rc = hw_mgr_res->hw_res[i]->process_cmd(
+					hw_mgr_res->hw_res[i],
+					CAM_ISP_HW_CMD_SET_CAMIF_DEBUG,
+					&camif_debug,
+					sizeof(camif_debug));
+			}
+		}
 	}
 
 	rc = cam_ife_hw_mgr_init_hw(ctx);
@@ -2811,7 +2833,7 @@ static void cam_ife_mgr_print_io_bufs(struct cam_packet *packet,
 	int32_t iommu_hdl, int32_t sec_mmu_hdl, uint32_t pf_buf_info,
 	bool *mem_found)
 {
-	uint64_t   iova_addr;
+	dma_addr_t iova_addr;
 	size_t     src_buf_size;
 	int        i;
 	int        j;
@@ -2855,11 +2877,6 @@ static void cam_ife_mgr_print_io_bufs(struct cam_packet *packet,
 				mmu_hdl, &iova_addr, &src_buf_size);
 			if (rc < 0) {
 				CAM_ERR(CAM_ISP, "get src buf address fail");
-				continue;
-			}
-			if (iova_addr >> 32) {
-				CAM_ERR(CAM_ISP, "Invalid mapped address");
-				rc = -EINVAL;
 				continue;
 			}
 
@@ -4129,8 +4146,8 @@ int cam_ife_mgr_do_tasklet_buf_done(void *handler_priv,
 	evt_payload = evt_payload_priv;
 	ife_hwr_mgr_ctx = (struct cam_ife_hw_mgr_ctx *)evt_payload->ctx;
 
-	CAM_DBG(CAM_ISP, "addr of evt_payload = %llx core index:0x%x",
-		(uint64_t)evt_payload, evt_payload->core_index);
+	CAM_DBG(CAM_ISP, "addr of evt_payload = %pK core index:0x%x",
+		evt_payload, evt_payload->core_index);
 	CAM_DBG(CAM_ISP, "bus_irq_status_0: = %x", evt_payload->irq_reg_val[0]);
 	CAM_DBG(CAM_ISP, "bus_irq_status_1: = %x", evt_payload->irq_reg_val[1]);
 	CAM_DBG(CAM_ISP, "bus_irq_status_2: = %x", evt_payload->irq_reg_val[2]);
@@ -4265,6 +4282,28 @@ DEFINE_SIMPLE_ATTRIBUTE(cam_ife_csid_debug,
 	cam_ife_get_csid_debug,
 	cam_ife_set_csid_debug, "%16llu");
 
+static int cam_ife_set_camif_debug(void *data, u64 val)
+{
+	g_ife_hw_mgr.debug_cfg.camif_debug = val;
+	CAM_DBG(CAM_ISP,
+		"Set camif enable_diag_sensor_status value :%lld", val);
+	return 0;
+}
+
+static int cam_ife_get_camif_debug(void *data, u64 *val)
+{
+	*val = g_ife_hw_mgr.debug_cfg.camif_debug;
+	CAM_DBG(CAM_ISP,
+		"Set camif enable_diag_sensor_status value :%lld",
+		g_ife_hw_mgr.debug_cfg.csid_debug);
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(cam_ife_camif_debug,
+	cam_ife_get_camif_debug,
+	cam_ife_set_camif_debug, "%16llu");
+
 static int cam_ife_hw_mgr_debug_register(void)
 {
 	g_ife_hw_mgr.debug_cfg.dentry = debugfs_create_dir("camera_ife",
@@ -4288,6 +4327,14 @@ static int cam_ife_hw_mgr_debug_register(void)
 		g_ife_hw_mgr.debug_cfg.dentry,
 		&g_ife_hw_mgr.debug_cfg.enable_recovery)) {
 		CAM_ERR(CAM_ISP, "failed to create enable_recovery");
+		goto err;
+	}
+
+	if (!debugfs_create_file("ife_camif_debug",
+		0644,
+		g_ife_hw_mgr.debug_cfg.dentry, NULL,
+		&cam_ife_camif_debug)) {
+		CAM_ERR(CAM_ISP, "failed to create cam_ife_camif_debug");
 		goto err;
 	}
 	g_ife_hw_mgr.debug_cfg.enable_recovery = 0;

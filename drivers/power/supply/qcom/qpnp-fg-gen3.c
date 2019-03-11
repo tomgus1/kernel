@@ -2136,11 +2136,13 @@ out:
 	mutex_unlock(&chip->cl.lock);
 }
 
+#define KI_COEFF_LOW_DISCHG_DEFAULT	800
 #define KI_COEFF_MED_DISCHG_DEFAULT	1500
 #define KI_COEFF_HI_DISCHG_DEFAULT	2200
 static int fg_adjust_ki_coeff_dischg(struct fg_chip *chip)
 {
 	int rc, i, msoc;
+	int ki_coeff_low = KI_COEFF_LOW_DISCHG_DEFAULT;
 	int ki_coeff_med = KI_COEFF_MED_DISCHG_DEFAULT;
 	int ki_coeff_hi = KI_COEFF_HI_DISCHG_DEFAULT;
 	u8 val;
@@ -2157,10 +2159,22 @@ static int fg_adjust_ki_coeff_dischg(struct fg_chip *chip)
 	if (chip->charge_status == POWER_SUPPLY_STATUS_DISCHARGING) {
 		for (i = KI_COEFF_SOC_LEVELS - 1; i >= 0; i--) {
 			if (msoc < chip->dt.ki_coeff_soc[i]) {
+				ki_coeff_low = chip->dt.ki_coeff_low_dischg[i];
 				ki_coeff_med = chip->dt.ki_coeff_med_dischg[i];
 				ki_coeff_hi = chip->dt.ki_coeff_hi_dischg[i];
 			}
 		}
+	}
+
+	fg_encode(chip->sp, FG_SRAM_KI_COEFF_LOW_DISCHG, ki_coeff_low, &val);
+	rc = fg_sram_write(chip,
+			chip->sp[FG_SRAM_KI_COEFF_LOW_DISCHG].addr_word,
+			chip->sp[FG_SRAM_KI_COEFF_LOW_DISCHG].addr_byte, &val,
+			chip->sp[FG_SRAM_KI_COEFF_LOW_DISCHG].len,
+			FG_IMA_DEFAULT);
+	if (rc < 0) {
+		pr_err("Error in writing ki_coeff_low, rc=%d\n", rc);
+		return rc;
 	}
 
 	fg_encode(chip->sp, FG_SRAM_KI_COEFF_MED_DISCHG, ki_coeff_med, &val);
@@ -2185,8 +2199,8 @@ static int fg_adjust_ki_coeff_dischg(struct fg_chip *chip)
 		return rc;
 	}
 
-	fg_dbg(chip, FG_STATUS, "Wrote ki_coeff_med %d ki_coeff_hi %d\n",
-		ki_coeff_med, ki_coeff_hi);
+	fg_dbg(chip, FG_STATUS, "Wrote ki_coeff_low %d ki_coeff_med %d ki_coeff_hi %d\n",
+		ki_coeff_low, ki_coeff_med, ki_coeff_hi);
 	return 0;
 }
 
@@ -3309,18 +3323,181 @@ out:
 
 static int fg_get_cycle_count(struct fg_chip *chip)
 {
-	int count;
+	int i, len = 0;
 
 	if (!chip->cyc_ctr.en)
 		return 0;
 
-	if ((chip->cyc_ctr.id <= 0) || (chip->cyc_ctr.id > BUCKET_COUNT))
-		return -EINVAL;
-
 	mutex_lock(&chip->cyc_ctr.lock);
-	count = chip->cyc_ctr.count[chip->cyc_ctr.id - 1];
+	for (i = 0; i < BUCKET_COUNT; i++)
+		len += chip->cyc_ctr.count[i];
+
 	mutex_unlock(&chip->cyc_ctr.lock);
-	return count;
+
+	len = len / BUCKET_COUNT;
+
+	return len;
+}
+
+static const char *fg_get_cycle_counts(struct fg_chip *chip)
+{
+	int i, len = 0;
+	char *buf;
+
+	if (!chip->cyc_ctr.en)
+		return NULL;
+
+	buf = chip->cyc_ctr.counter;
+	mutex_lock(&chip->cyc_ctr.lock);
+	for (i = 0; i < BUCKET_COUNT; i++) {
+		if (sizeof(chip->cyc_ctr.counter) - len < 8) {
+			pr_err("Invalid length %d\n", len);
+			mutex_unlock(&chip->cyc_ctr.lock);
+			return NULL;
+		}
+
+		len += snprintf(buf+len, 8, "%d ", chip->cyc_ctr.count[i]);
+	}
+	mutex_unlock(&chip->cyc_ctr.lock);
+
+	buf[len] = '\0';
+	return buf;
+}
+
+#define ESR_SW_FCC_UA				100000	/* 100mA */
+#define ESR_EXTRACTION_ENABLE_MASK		BIT(0)
+static void fg_esr_sw_work(struct work_struct *work)
+{
+	struct fg_chip *chip = container_of(work,
+			struct fg_chip, esr_sw_work);
+	union power_supply_propval pval = {0, };
+	int rc, esr_uohms = 0;
+
+	vote(chip->awake_votable, FG_ESR_VOTER, true, 0);
+	/*
+	 * Enable ESR extraction just before we reduce the FCC
+	 * to make sure that FG extracts the ESR. Disable ESR
+	 * extraction after FCC reduction is complete to prevent
+	 * any further HW pulses.
+	 */
+	rc = fg_sram_masked_write(chip, ESR_EXTRACTION_ENABLE_WORD,
+			ESR_EXTRACTION_ENABLE_OFFSET,
+			ESR_EXTRACTION_ENABLE_MASK, 0x1, FG_IMA_DEFAULT);
+	if (rc < 0) {
+		pr_err("Failed to enable ESR extraction rc=%d\n", rc);
+		goto done;
+	}
+
+	/* delay for 1 FG cycle to complete */
+	msleep(1500);
+
+	/* for FCC to 100mA */
+	pval.intval = ESR_SW_FCC_UA;
+	rc = power_supply_set_property(chip->batt_psy,
+			POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+			&pval);
+	if (rc < 0) {
+		pr_err("Failed to set FCC to 100mA rc=%d\n", rc);
+		goto done;
+	}
+
+	/* delay for ESR readings */
+	msleep(3000);
+
+	/* FCC to 0 (removes vote) */
+	pval.intval = 0;
+	rc = power_supply_set_property(chip->batt_psy,
+			POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+			&pval);
+	if (rc < 0) {
+		pr_err("Failed to remove FCC vote rc=%d\n", rc);
+		goto done;
+	}
+
+	fg_get_sram_prop(chip, FG_SRAM_ESR, &esr_uohms);
+	fg_dbg(chip, FG_STATUS, "SW ESR done ESR=%d\n", esr_uohms);
+
+	/* restart the alarm timer */
+	alarm_start_relative(&chip->esr_sw_timer,
+		ms_to_ktime(chip->esr_wakeup_ms));
+done:
+	rc = fg_sram_masked_write(chip, ESR_EXTRACTION_ENABLE_WORD,
+			ESR_EXTRACTION_ENABLE_OFFSET,
+			ESR_EXTRACTION_ENABLE_MASK, 0x0, FG_IMA_DEFAULT);
+	if (rc < 0)
+		pr_err("Failed to disable ESR extraction rc=%d\n", rc);
+
+
+	vote(chip->awake_votable, FG_ESR_VOTER, false, 0);
+	fg_relax(chip, FG_SW_ESR_WAKE);
+}
+
+static enum alarmtimer_restart
+	fg_esr_sw_timer(struct alarm *alarm, ktime_t now)
+{
+	struct fg_chip *chip = container_of(alarm,
+			struct fg_chip, esr_sw_timer);
+
+	if (!chip->usb_present)
+		return ALARMTIMER_NORESTART;
+
+	fg_stay_awake(chip, FG_SW_ESR_WAKE);
+	schedule_work(&chip->esr_sw_work);
+
+	return ALARMTIMER_NORESTART;
+}
+
+static int fg_config_esr_sw(struct fg_chip *chip)
+{
+	int rc;
+	union power_supply_propval prop = {0, };
+
+	if (!chip->dt.use_esr_sw)
+		return 0;
+
+	if (!usb_psy_initialized(chip))
+		return 0;
+
+	rc = power_supply_get_property(chip->usb_psy,
+			POWER_SUPPLY_PROP_PRESENT, &prop);
+	if (rc < 0) {
+		pr_err("Error in reading usb-status rc = %d\n", rc);
+		return rc;
+	}
+
+	if (chip->usb_present != prop.intval) {
+		chip->usb_present = prop.intval;
+		fg_dbg(chip, FG_STATUS, "USB status changed=%d\n",
+						chip->usb_present);
+		/* cancel any pending work */
+		alarm_cancel(&chip->esr_sw_timer);
+		cancel_work_sync(&chip->esr_sw_work);
+
+		if (chip->usb_present) {
+			/* disable ESR extraction across the charging cycle */
+			rc = fg_sram_masked_write(chip,
+					ESR_EXTRACTION_ENABLE_WORD,
+					ESR_EXTRACTION_ENABLE_OFFSET,
+					ESR_EXTRACTION_ENABLE_MASK,
+					0x0, FG_IMA_DEFAULT);
+			if (rc < 0)
+				return rc;
+			/* wake up early for the first ESR on insertion */
+			alarm_start_relative(&chip->esr_sw_timer,
+				ms_to_ktime(chip->esr_wakeup_ms / 2));
+		} else {
+			/* enable ESR extraction on removal */
+			rc = fg_sram_masked_write(chip,
+					ESR_EXTRACTION_ENABLE_WORD,
+					ESR_EXTRACTION_ENABLE_OFFSET,
+					ESR_EXTRACTION_ENABLE_MASK,
+					0x1, FG_IMA_DEFAULT);
+			if (rc < 0)
+				return rc;
+		}
+	}
+
+	return 0;
 }
 
 #define ESR_SW_FCC_UA				100000	/* 100mA */
@@ -4733,8 +4910,8 @@ static int fg_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
 		pval->intval = fg_get_cycle_count(chip);
 		break;
-	case POWER_SUPPLY_PROP_CYCLE_COUNT_ID:
-		pval->intval = chip->cyc_ctr.id;
+	case POWER_SUPPLY_PROP_CYCLE_COUNTS:
+		pval->strval = fg_get_cycle_counts(chip);
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW_RAW:
 		rc = fg_get_charge_raw(chip, &pval->intval);
@@ -4817,15 +4994,6 @@ static int fg_psy_set_property(struct power_supply *psy,
 	int rc = 0;
 
 	switch (psp) {
-	case POWER_SUPPLY_PROP_CYCLE_COUNT_ID:
-		if ((pval->intval > 0) && (pval->intval <= BUCKET_COUNT)) {
-			chip->cyc_ctr.id = pval->intval;
-		} else {
-			pr_err("rejecting invalid cycle_count_id = %d\n",
-				pval->intval);
-			return -EINVAL;
-		}
-		break;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
 		rc = fg_set_constant_chg_voltage(chip, pval->intval);
 		break;
@@ -4936,7 +5104,6 @@ static int fg_property_is_writeable(struct power_supply *psy,
 						enum power_supply_property psp)
 {
 	switch (psp) {
-	case POWER_SUPPLY_PROP_CYCLE_COUNT_ID:
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
 	case POWER_SUPPLY_PROP_CC_STEP:
 	case POWER_SUPPLY_PROP_CC_STEP_SEL:
@@ -5025,7 +5192,7 @@ static enum power_supply_property fg_psy_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN,
 	POWER_SUPPLY_PROP_CYCLE_COUNT,
-	POWER_SUPPLY_PROP_CYCLE_COUNT_ID,
+	POWER_SUPPLY_PROP_CYCLE_COUNTS,
 	POWER_SUPPLY_PROP_CHARGE_NOW_RAW,
 	POWER_SUPPLY_PROP_CHARGE_NOW,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
@@ -5329,21 +5496,6 @@ static int fg_hw_init(struct fg_chip *chip)
 			ESR_PULL_DOWN_MODE_MASK, val);
 		if (rc < 0) {
 			pr_err("Error in writing esr_pull_down, rc=%d\n", rc);
-			return rc;
-		}
-	}
-
-	if (chip->dt.ki_coeff_low_dischg != -EINVAL) {
-		fg_encode(chip->sp, FG_SRAM_KI_COEFF_LOW_DISCHG,
-			chip->dt.ki_coeff_low_dischg, &val);
-		rc = fg_sram_write(chip,
-				chip->sp[FG_SRAM_KI_COEFF_LOW_DISCHG].addr_word,
-				chip->sp[FG_SRAM_KI_COEFF_LOW_DISCHG].addr_byte,
-				&val, chip->sp[FG_SRAM_KI_COEFF_LOW_DISCHG].len,
-				FG_IMA_DEFAULT);
-		if (rc < 0) {
-			pr_err("Error in writing ki_coeff_low_dischg, rc=%d\n",
-				rc);
 			return rc;
 		}
 	}
@@ -5856,13 +6008,19 @@ static int fg_parse_ki_coefficients(struct fg_chip *chip)
 	if (!rc)
 		chip->dt.ki_coeff_hi_chg = temp;
 
-	chip->dt.ki_coeff_low_dischg = -EINVAL;
-	rc = of_property_read_u32(node, "qcom,ki-coeff-low-dischg", &temp);
-	if (!rc)
-		chip->dt.ki_coeff_low_dischg = temp;
+	if (!of_find_property(node, "qcom,ki-coeff-soc-dischg", NULL) ||
+		(!of_find_property(node, "qcom,ki-coeff-low-dischg", NULL) &&
+		!of_find_property(node, "qcom,ki-coeff-med-dischg", NULL) &&
+		!of_find_property(node, "qcom,ki-coeff-hi-dischg", NULL)))
+		return 0;
 
 	rc = fg_parse_dt_property_u32_array(node, "qcom,ki-coeff-soc-dischg",
 		chip->dt.ki_coeff_soc, KI_COEFF_SOC_LEVELS);
+	if (rc < 0)
+		return rc;
+
+	rc = fg_parse_dt_property_u32_array(node, "qcom,ki-coeff-low-dischg",
+		chip->dt.ki_coeff_low_dischg, KI_COEFF_SOC_LEVELS);
 	if (rc < 0)
 		return rc;
 
@@ -5883,15 +6041,21 @@ static int fg_parse_ki_coefficients(struct fg_chip *chip)
 			return -EINVAL;
 		}
 
-		if (chip->dt.ki_coeff_med_dischg[i] < 0 ||
-			chip->dt.ki_coeff_med_dischg[i] > KI_COEFF_MAX) {
-			pr_err("Error in ki_coeff_med_dischg values\n");
+		if (chip->dt.ki_coeff_low_dischg[i] < 0 ||
+			chip->dt.ki_coeff_low_dischg[i] > KI_COEFF_MAX) {
+			pr_err("Error in ki_coeff_low_dischg values\n");
 			return -EINVAL;
 		}
 
 		if (chip->dt.ki_coeff_med_dischg[i] < 0 ||
 			chip->dt.ki_coeff_med_dischg[i] > KI_COEFF_MAX) {
 			pr_err("Error in ki_coeff_med_dischg values\n");
+			return -EINVAL;
+		}
+
+		if (chip->dt.ki_coeff_hi_dischg[i] < 0 ||
+			chip->dt.ki_coeff_hi_dischg[i] > KI_COEFF_MAX) {
+			pr_err("Error in ki_coeff_hi_dischg values\n");
 			return -EINVAL;
 		}
 	}
@@ -6160,8 +6324,6 @@ static int fg_parse_dt(struct fg_chip *chip)
 	}
 
 	chip->cyc_ctr.en = of_property_read_bool(node, "qcom,cycle-counter-en");
-	if (chip->cyc_ctr.en)
-		chip->cyc_ctr.id = 1;
 
 	chip->dt.force_load_profile = of_property_read_bool(node,
 					"qcom,fg-force-load-profile");

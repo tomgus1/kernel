@@ -3614,10 +3614,18 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 		}
 		break;
 	case V4L2_CID_MPEG_VIDC_VIDEO_OPERATING_RATE:
-		dprintk(VIDC_DBG,
-			"inst(%pK) operating rate changed from %d to %d\n",
-			inst, inst->operating_rate >> 16, ctrl->val >> 16);
-		inst->operating_rate = ctrl->val;
+		if ((ctrl->val >> 16) < inst->capability.frame_rate.min ||
+			 (ctrl->val >> 16) > inst->capability.frame_rate.max) {
+			dprintk(VIDC_ERR, "Invalid operating rate %u\n",
+				(ctrl->val >> 16));
+			rc = -ENOTSUPP;
+		} else {
+			dprintk(VIDC_DBG,
+				"inst(%pK) operating rate changed from %d to %d\n",
+				inst, inst->prop.operating_rate >> 16,
+					ctrl->val >> 16);
+			inst->prop.operating_rate = ctrl->val;
+		}
 		break;
 	case V4L2_CID_MPEG_VIDC_VIDEO_VENC_BITRATE_TYPE:
 	{
@@ -4157,6 +4165,7 @@ int msm_venc_inst_init(struct msm_vidc_inst *inst)
 	inst->buffer_mode_set[OUTPUT_PORT] = HAL_BUFFER_MODE_STATIC;
 	inst->buffer_mode_set[CAPTURE_PORT] = HAL_BUFFER_MODE_STATIC;
 	inst->prop.fps = DEFAULT_FPS;
+	inst->prop.operating_rate = 0;
 	inst->capability.pixelprocess_capabilities = 0;
 	inst->operating_rate = 0;
 	return rc;

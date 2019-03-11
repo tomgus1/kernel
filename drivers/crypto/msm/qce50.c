@@ -6121,13 +6121,15 @@ EXPORT_SYMBOL(qce_open);
 int qce_close(void *handle)
 {
 	struct qce_device *pce_dev = (struct qce_device *) handle;
+	int ret = -1;
 
 	if (handle == NULL)
 		return -ENODEV;
 
 	mutex_lock(&qce_iomap_mutex);
-	qce_enable_clk(pce_dev);
-	qce_sps_exit(pce_dev);
+	ret = qce_enable_clk(pce_dev);
+	if (!ret)
+		qce_sps_exit(pce_dev);
 
 	if (pce_dev->iobase)
 		iounmap(pce_dev->iobase);
@@ -6140,7 +6142,8 @@ int qce_close(void *handle)
 	if (pce_dev->enable_s1_smmu)
 		qce_iommu_release_iomapping(pce_dev);
 
-	qce_disable_clk(pce_dev);
+	if (!ret)
+		qce_disable_clk(pce_dev);
 	__qce_deinit_clk(pce_dev);
 	mutex_unlock(&qce_iomap_mutex);
 	kfree(handle);

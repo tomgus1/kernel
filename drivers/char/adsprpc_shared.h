@@ -36,6 +36,7 @@
 #define FASTRPC_GLINK_GUID "fastrpcglink-apps-dsp"
 #define FASTRPC_SMD_GUID "fastrpcsmd-apps-dsp"
 #define DEVICE_NAME      "adsprpc-smd"
+#define DEVICE_NAME_SECURE "adsprpc-smd-secure"
 
 /* Set for buffers that have no virtual mapping in userspace */
 #define FASTRPC_ATTR_NOVA 0x1
@@ -256,6 +257,12 @@ struct fastrpc_ctrl_kalloc {
 struct fastrpc_ctrl_smmu {
 	uint32_t sharedcb;
 };
+
+#define FASTRPC_CONTROL_KALLOC (3)
+struct fastrpc_ctrl_kalloc {
+	uint32_t kalloc_support; /* Remote memory allocation from kernel */
+};
+
 struct fastrpc_ioctl_control {
 	uint32_t req;
 	union {

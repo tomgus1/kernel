@@ -347,7 +347,7 @@ static void destroy_cache(struct zs_pool *pool)
 static unsigned long cache_alloc_handle(struct zs_pool *pool, gfp_t gfp)
 {
 	return (unsigned long)kmem_cache_alloc(pool->handle_cachep,
-			gfp & ~(__GFP_HIGHMEM|__GFP_MOVABLE));
+			gfp & ~(__GFP_HIGHMEM|__GFP_MOVABLE|__GFP_CMA));
 }
 
 static void cache_free_handle(struct zs_pool *pool, unsigned long handle)

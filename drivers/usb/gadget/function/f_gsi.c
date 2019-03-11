@@ -24,6 +24,16 @@ static bool qti_packet_debug;
 module_param(qti_packet_debug, bool, 0644);
 MODULE_PARM_DESC(qti_packet_debug, "Print QTI Packet's Raw Data");
 
+/* initial value, changed by "ifconfig usb0 hw ether xx:xx:xx:xx:xx:xx" */
+static char *gsi_dev_addr;
+module_param(gsi_dev_addr, charp, 0644);
+MODULE_PARM_DESC(gsi_dev_addr, "QC Device Ethernet Address");
+
+/* this address is invisible to ifconfig */
+static char *gsi_host_addr;
+module_param(gsi_host_addr, charp, 0644);
+MODULE_PARM_DESC(gsi_host_addr, "QC Host Ethernet Address");
+
 static struct workqueue_struct *ipa_usb_wq;
 static struct f_gsi *__gsi[USB_PROT_MAX];
 static void *ipc_log_ctxt;
@@ -84,6 +94,21 @@ static inline bool usb_gsi_remote_wakeup_allowed(struct usb_function *f)
 	log_event_dbg("%s: remote_wakeup_allowed:%s", __func__,
 			(remote_wakeup_allowed ? "true" : "false"));
 	return remote_wakeup_allowed;
+}
+
+static void usb_gsi_check_pending_wakeup(struct usb_function *f)
+{
+	struct f_gsi *gsi = func_to_gsi(f);
+
+	/*
+	 * If host suspended bus without receiving notification request then
+	 * initiate remote-wakeup. As driver won't be able to do it later since
+	 * notification request is already queued.
+	 */
+	if (gsi->c_port.notify_req_queued && usb_gsi_remote_wakeup_allowed(f)) {
+		mod_timer(&gsi->gsi_rw_timer, jiffies + msecs_to_jiffies(2000));
+		log_event_dbg("%s: pending response, arm rw_timer\n", __func__);
+	}
 }
 
 static void post_event(struct gsi_data_port *port, u8 event)
@@ -1058,9 +1083,11 @@ static void ipa_work_handler(struct work_struct *w)
 			ipa_resume_work_handler(d_port);
 			d_port->sm_state = STATE_CONNECTED;
 		} else if (event == EVT_DISCONNECTED) {
+			usb_gadget_autopm_get(d_port->gadget);
 			ipa_disconnect_work_handler(d_port);
 			d_port->sm_state = STATE_INITIALIZED;
 			log_event_dbg("%s: ST_SUS_EVT_DIS", __func__);
+			usb_gadget_autopm_put_async(d_port->gadget);
 		}
 		break;
 	default:
@@ -1368,7 +1395,7 @@ static long gsi_ctrl_dev_ioctl(struct file *fp, unsigned int cmd,
 						ctrl_device);
 	struct f_gsi *gsi;
 	struct gsi_ctrl_pkt *cpkt;
-	struct ep_info info;
+	struct ep_info info = { {0} };
 	int val, ret = 0;
 	unsigned long flags;
 
@@ -1823,6 +1850,9 @@ static void gsi_ctrl_notify_resp_complete(struct usb_ep *ep,
 	spin_lock_irqsave(&gsi->c_port.lock, flags);
 	gsi->c_port.notify_req_queued = false;
 	spin_unlock_irqrestore(&gsi->c_port.lock, flags);
+
+	log_event_dbg("%s: status:%d req_queued:%d",
+		__func__, status, gsi->c_port.notify_req_queued);
 
 	switch (status) {
 	case -ECONNRESET:
@@ -2390,8 +2420,13 @@ static int gsi_set_alt(struct usb_function *f, unsigned int intf,
 		if (alt == 0 && ((gsi->d_port.in_ep &&
 				!gsi->d_port.in_ep->driver_data) ||
 				(gsi->d_port.out_ep &&
-				!gsi->d_port.out_ep->driver_data)))
+				!gsi->d_port.out_ep->driver_data))) {
 			ipa_disconnect_handler(&gsi->d_port);
+			post_event(&gsi->d_port, EVT_DISCONNECTED);
+			queue_work(gsi->d_port.ipa_usb_wq,
+				&gsi->d_port.usb_ipa_w);
+			log_event_dbg("%s: Disconnecting\n", __func__);
+		}
 
 		gsi->data_interface_up = alt;
 		log_event_dbg("DATA_INTERFACE id = %d, status = %d",
@@ -2478,12 +2513,13 @@ static void gsi_suspend(struct usb_function *f)
 		return;
 	}
 
-	/*
-	 * GPS doesn't use any data interface, hence bail out as there is no
-	 * GSI specific handling needed.
+	/* For functions such as MBIM that support alternate data
+	 * interface, suspend/resume handling becomes a no-op if the
+	 * data interface is not selected.
 	 */
-	if (gsi->prot_id == USB_PROT_GPS_CTRL) {
+	if (!gsi->data_interface_up) {
 		log_event_dbg("%s: suspend done\n", __func__);
+		usb_gsi_check_pending_wakeup(f);
 		return;
 	}
 
@@ -2530,7 +2566,7 @@ static void gsi_resume(struct usb_function *f)
 	/* Check any pending cpkt, and queue immediately on resume */
 	gsi_ctrl_send_notification(gsi);
 
-	if (gsi->prot_id == USB_PROT_GPS_CTRL) {
+	if (!gsi->data_interface_up) {
 		log_event_dbg("%s: resume done\n", __func__);
 		return;
 	}
@@ -2814,6 +2850,26 @@ static void ipa_ready_callback(void *user_data)
 	wake_up_interruptible(&gsi->d_port.wait_for_ipa_ready);
 }
 
+static void gsi_get_ether_addr(const char *str, u8 *dev_addr)
+{
+	if (str) {
+		unsigned int i;
+
+		for (i = 0; i < ETH_ALEN; i++) {
+			unsigned char num;
+
+			if ((*str == '.') || (*str == ':'))
+				str++;
+			num = hex_to_bin(*str++) << 4;
+			num |= hex_to_bin(*str++);
+			dev_addr[i] = num;
+		}
+		if (is_valid_ether_addr(dev_addr))
+			return;
+	}
+	random_ether_addr(dev_addr);
+}
+
 static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct usb_composite_dev *cdev = c->cdev;
@@ -2821,6 +2877,7 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 	struct f_gsi *gsi = func_to_gsi(f);
 	struct rndis_params *params;
 	struct net_device *net;
+	struct gsi_opts *opts;
 	char *name = NULL;
 	int status;
 	__u8  class;
@@ -2886,11 +2943,15 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		rndis_set_param_medium(gsi->params, RNDIS_MEDIUM_802_3, 0);
 
 		/* export host's Ethernet address in CDC format */
-		random_ether_addr(gsi->d_port.ipa_init_params.device_ethaddr);
-		random_ether_addr(gsi->d_port.ipa_init_params.host_ethaddr);
+		gsi_get_ether_addr(gsi_dev_addr,
+				   gsi->d_port.ipa_init_params.device_ethaddr);
+
+		gsi_get_ether_addr(gsi_host_addr,
+				   gsi->d_port.ipa_init_params.host_ethaddr);
+
 		log_event_dbg("setting host_ethaddr=%pM, device_ethaddr = %pM",
-		gsi->d_port.ipa_init_params.host_ethaddr,
-		gsi->d_port.ipa_init_params.device_ethaddr);
+				gsi->d_port.ipa_init_params.host_ethaddr,
+				gsi->d_port.ipa_init_params.device_ethaddr);
 		memcpy(gsi->ethaddr, &gsi->d_port.ipa_init_params.host_ethaddr,
 				ETH_ALEN);
 		rndis_set_host_mac(gsi->params, gsi->ethaddr);
@@ -3024,18 +3085,15 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.notify_buf_len = sizeof(struct usb_cdc_notification);
 		mbim_gsi_desc.wMaxSegmentSize = cpu_to_le16(0x800);
 
-		/*
-		 * If MBIM is bound in a config other than the first, tell
-		 * Windows about it by returning the num as a string in the
-		 * OS descriptor's subCompatibleID field. Windows only supports
-		 * up to config #4.
-		 */
-		if (c->bConfigurationValue >= 2 &&
-				c->bConfigurationValue <= 4) {
-			log_event_dbg("MBIM in configuration %d",
-					c->bConfigurationValue);
-			mbim_gsi_ext_config_desc.function.subCompatibleID[0] =
-				c->bConfigurationValue + '0';
+		if (cdev->use_os_string) {
+			f->os_desc_table = kzalloc(sizeof(*f->os_desc_table),
+						GFP_KERNEL);
+			if (!f->os_desc_table)
+				return -ENOMEM;
+			opts = container_of(f->fi, struct gsi_opts, func_inst);
+			f->os_desc_n = 1;
+			f->os_desc_table[0].os_desc = &opts->os_desc;
+			f->os_desc_table[0].if_id = gsi->data_id;
 		}
 		break;
 	case USB_PROT_RMNET_IPA:
@@ -3099,11 +3157,15 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.notify_buf_len = GSI_CTRL_NOTIFY_BUFF_LEN;
 
 		/* export host's Ethernet address in CDC format */
-		random_ether_addr(gsi->d_port.ipa_init_params.device_ethaddr);
-		random_ether_addr(gsi->d_port.ipa_init_params.host_ethaddr);
+		gsi_get_ether_addr(gsi_dev_addr,
+				   gsi->d_port.ipa_init_params.device_ethaddr);
+
+		gsi_get_ether_addr(gsi_host_addr,
+				   gsi->d_port.ipa_init_params.host_ethaddr);
+
 		log_event_dbg("setting host_ethaddr=%pM, device_ethaddr = %pM",
-		gsi->d_port.ipa_init_params.host_ethaddr,
-		gsi->d_port.ipa_init_params.device_ethaddr);
+				gsi->d_port.ipa_init_params.host_ethaddr,
+				gsi->d_port.ipa_init_params.device_ethaddr);
 
 		snprintf(gsi->ethaddr, sizeof(gsi->ethaddr),
 		"%02X%02X%02X%02X%02X%02X",
@@ -3221,6 +3283,7 @@ skip_ipa_init:
 
 dereg_rndis:
 	rndis_deregister(gsi->params);
+	kfree(f->os_desc_table);
 fail:
 	return status;
 }
@@ -3252,8 +3315,11 @@ skip_ipa_dinit:
 		rndis_deregister(gsi->params);
 	}
 
-	if (gsi->prot_id == USB_PROT_MBIM_IPA)
-		mbim_gsi_ext_config_desc.function.subCompatibleID[0] = 0;
+	if (gsi->prot_id == USB_PROT_MBIM_IPA) {
+		kfree(f->os_desc_table);
+		f->os_desc_table = NULL;
+		f->os_desc_n = 0;
+	}
 
 	if (gadget_is_superspeed(c->cdev->gadget)) {
 		usb_free_descriptors(f->ss_descriptors);
@@ -3576,6 +3642,8 @@ static int gsi_set_inst_name(struct usb_function_instance *fi,
 	int name_len, prot_id, ret = 0;
 	struct gsi_opts *opts;
 	struct f_gsi *gsi;
+	struct usb_os_desc *descs[1];
+	char *names[1];
 
 	opts = container_of(fi, struct gsi_opts, func_inst);
 
@@ -3593,6 +3661,15 @@ static int gsi_set_inst_name(struct usb_function_instance *fi,
 	if (prot_id == USB_PROT_RNDIS_IPA)
 		config_group_init_type_name(&opts->func_inst.group, "",
 					    &gsi_func_rndis_type);
+	if (prot_id == IPA_USB_MBIM) {
+		opts->os_desc.ext_compat_id = opts->ext_compat_id;
+		INIT_LIST_HEAD(&opts->os_desc.ext_prop);
+		descs[0] = &opts->os_desc;
+		names[0] = "MBIM";
+		opts->interf_group = usb_os_desc_prepare_interf_dir(
+						&opts->func_inst.group, 1,
+						descs, names, THIS_MODULE);
+	}
 
 	gsi = opts->gsi = __gsi[prot_id];
 	opts->gsi->prot_id = prot_id;
@@ -3607,8 +3684,11 @@ static void gsi_free_inst(struct usb_function_instance *f)
 {
 	struct gsi_opts *opts = container_of(f, struct gsi_opts, func_inst);
 
-	if (opts && opts->gsi && opts->gsi->c_port.ctrl_device.fops)
-		misc_deregister(&opts->gsi->c_port.ctrl_device);
+	if (opts) {
+		if (opts->gsi && opts->gsi->c_port.ctrl_device.fops)
+			misc_deregister(&opts->gsi->c_port.ctrl_device);
+		kfree(opts->interf_group);
+	}
 
 	kfree(opts);
 }

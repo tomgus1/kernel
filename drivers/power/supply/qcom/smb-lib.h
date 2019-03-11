@@ -95,6 +95,8 @@ enum print_reason {
 #define DC_ICL_VOTER			"DC_ICL_VOTER"
 #define DC_OV_BY_PLUGIN_VOTER		"DC_OV_BY_PLUGIN_VOTER"
 #define DC_OV_BY_OTG_VOTER		"DC_OV_BY_OTG_VOTER"
+#define FG_ESR_VOTER			"FG_ESR_VOTER"
+#define FCC_STEPPER_VOTER		"FCC_STEPPER_VOTER"
 #endif
 
 #define VCONN_MAX_ATTEMPTS	3
@@ -443,6 +445,7 @@ struct smb_charger {
 	bool			is_audio_adapter;
 	bool			disable_stat_sw_override;
 	bool			in_chg_lock;
+        bool			fcc_stepper_enable;
 
 	/* workaround flag */
 	u32			wa_flags;
@@ -457,6 +460,7 @@ struct smb_charger {
 	int			qc2_max_pulses;
 	bool			non_compliant_chg_detected;
 	bool			fake_usb_insertion;
+	bool			reddragon_ipc_wa;
 
 	/* extcon for VBUS / ID notification to USB for uUSB */
 	struct extcon_dev	*extcon;
@@ -705,6 +709,8 @@ int smblib_get_prop_usb_suspend(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_usb_voltage_max(struct smb_charger *chg,
 				union power_supply_propval *val);
+int smblib_get_prop_usb_voltage_max_design(struct smb_charger *chg,
+				union power_supply_propval *val);
 int smblib_get_prop_usb_voltage_now(struct smb_charger *chg,
 				union power_supply_propval *val);
 int smblib_get_prop_usb_current_now(struct smb_charger *chg,
@@ -775,6 +781,9 @@ int smblib_set_icl_current(struct smb_charger *chg, int icl_ua);
 int smblib_get_icl_current(struct smb_charger *chg, int *icl_ua);
 int smblib_get_charge_current(struct smb_charger *chg, int *total_current_ua);
 int smblib_get_prop_pr_swap_in_progress(struct smb_charger *chg,
+				union power_supply_propval *val);
+int smblib_get_prop_from_bms(struct smb_charger *chg,
+				enum power_supply_property psp,
 				union power_supply_propval *val);
 int smblib_set_prop_pr_swap_in_progress(struct smb_charger *chg,
 				const union power_supply_propval *val);

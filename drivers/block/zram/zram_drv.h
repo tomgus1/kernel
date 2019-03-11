@@ -44,10 +44,18 @@
 
 /* Flags for zram pages (table[page_no].value) */
 enum zram_pageflags {
+<<<<<<< HEAD
 	/* Page consists the same element */
 	ZRAM_SAME = ZRAM_FLAG_SHIFT,
 	ZRAM_ACCESS,	/* page is now accessed */
 	ZRAM_WB,	/* page is stored on backing_device */
+=======
+	/* zram slot is locked */
+	ZRAM_LOCK = ZRAM_FLAG_SHIFT,
+	ZRAM_SAME,	/* Page consists the same element */
+	ZRAM_WB,	/* page is stored on backing_device */
+	ZRAM_HUGE,	/* Incompressible page */
+>>>>>>> daca55403e3655e32fc46aa2974a9454f95ab2cf
 
 	__NR_ZRAM_PAGEFLAGS,
 };
@@ -61,6 +69,9 @@ struct zram_table_entry {
 		unsigned long element;
 	};
 	unsigned long value;
+#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+	ktime_t ac_time;
+#endif
 };
 
 struct zram_stats {
@@ -72,6 +83,10 @@ struct zram_stats {
 	atomic64_t invalid_io;	/* non-page-aligned I/O requests */
 	atomic64_t notify_free;	/* no. of swap slot free notifications */
 	atomic64_t same_pages;		/* no. of same element filled pages */
+<<<<<<< HEAD
+=======
+	atomic64_t huge_pages;		/* no. of huge pages */
+>>>>>>> daca55403e3655e32fc46aa2974a9454f95ab2cf
 	atomic64_t pages_stored;	/* no. of pages currently stored */
 	atomic_long_t max_used_pages;	/* no. of maximum pages stored */
 	atomic64_t writestall;		/* no. of write slow paths */
@@ -108,5 +123,11 @@ struct zram {
 	unsigned long nr_pages;
 	spinlock_t bitmap_lock;
 #endif
+<<<<<<< HEAD
+=======
+#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+	struct dentry *debugfs_dir;
+#endif
+>>>>>>> daca55403e3655e32fc46aa2974a9454f95ab2cf
 };
 #endif

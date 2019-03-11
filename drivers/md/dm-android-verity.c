@@ -196,6 +196,7 @@ static int read_block_dev(struct bio_read *payload, struct block_device *bdev,
 
 	bio->bi_bdev = bdev;
 	bio->bi_iter.bi_sector = offset;
+	bio_set_op_attrs(bio, REQ_OP_READ, READ_SYNC);
 
 	payload->page_io = kzalloc(sizeof(struct page *) *
 		payload->number_of_pages, GFP_KERNEL);
@@ -558,28 +559,85 @@ static int verity_mode(void)
 }
 
 #ifdef VERITY_PKCS7_MIGRATED /* TODO: Reimplement me with PKCS#7 messages! */
+static void handle_error(void)
+{
+	int mode = verity_mode();
+	if (mode == DM_VERITY_MODE_RESTART) {
+		DMERR("triggering restart");
+		kernel_restart("dm-verity device corrupted");
+	} else {
+		DMERR("Mounting verity root failed");
+	}
+}
+
+static struct public_key_signature *table_make_digest(
+						enum hash_algo hash,
+						const void *table,
+						unsigned long table_len)
+{
+	struct public_key_signature *pks = NULL;
+	struct crypto_shash *tfm;
+	struct shash_desc *desc;
+	size_t digest_size, desc_size;
+	int ret;
+
+	/* Allocate the hashing algorithm we're going to need and find out how
+	 * big the hash operational data will be.
+	 */
+	tfm = crypto_alloc_shash(hash_algo_name[hash], 0, 0);
+	if (IS_ERR(tfm))
+		return ERR_CAST(tfm);
+
+	desc_size = crypto_shash_descsize(tfm) + sizeof(*desc);
+	digest_size = crypto_shash_digestsize(tfm);
+
+	/* We allocate the hash operational data storage on the end of out
+	 * context data and the digest output buffer on the end of that.
+	 */
+	ret = -ENOMEM;
+	pks = kzalloc(digest_size + sizeof(*pks) + desc_size, GFP_KERNEL);
+	if (!pks)
+		goto error;
+
+	pks->pkey_algo = "rsa";
+	pks->hash_algo = hash_algo_name[hash];
+	pks->digest = (u8 *)pks + sizeof(*pks) + desc_size;
+	pks->digest_size = digest_size;
+
+	desc = (struct shash_desc *)(pks + 1);
+	desc->tfm = tfm;
+	desc->flags = CRYPTO_TFM_REQ_MAY_SLEEP;
+
+	ret = crypto_shash_init(desc);
+	if (ret < 0)
+		goto error;
+
+	ret = crypto_shash_finup(desc, table, table_len, pks->digest);
+	if (ret < 0)
+		goto error;
+
+	crypto_free_shash(tfm);
+	return pks;
+
+error:
+	kfree(pks);
+	crypto_free_shash(tfm);
+	return ERR_PTR(ret);
+}
+
+
 static int verify_verity_signature(char *key_id,
 		struct android_metadata *metadata)
 {
-	key_ref_t key_ref;
-	struct key *key;
 	struct public_key_signature *pks = NULL;
 	int retval = -EINVAL;
 
-	key_ref = keyring_search(make_key_ref(system_trusted_keyring, 1),
-		&key_type_asymmetric, key_id);
-
-	if (IS_ERR(key_ref)) {
-		DMERR("keyring: key not found");
-		return -ENOKEY;
-	}
-
-	key = key_ref_to_ptr(key_ref);
+	if (!key_id)
+		goto error;
 
 	pks = table_make_digest("sha256",
 			(const void *)metadata->verity_table,
 			le32_to_cpu(metadata->header->table_length));
-
 	if (IS_ERR(pks)) {
 		DMERR("hashing failed");
 		retval = PTR_ERR(pks);
@@ -593,10 +651,17 @@ static int verify_verity_signature(char *key_id,
 	pks->s_size = RSANUMBYTES;
 
 	retval = verify_signature(key, pks);
+	pks->s = kmemdup(&metadata->header->signature[0], RSANUMBYTES, GFP_KERNEL);
+	if (!pks->s) {
+		DMERR("Error allocating memory for signature");
+		goto error;
+	}
+	pks->s_size = RSANUMBYTES;
+
+	retval = verify_signature_one(pks, NULL, key_id);
+	kfree(pks->s);
 error:
 	kfree(pks);
-	key_put(key);
-
 	return retval;
 }
 #else
@@ -606,17 +671,6 @@ static int verify_verity_signature(char *key_id,
 	return 0;
 }
 #endif
-
-static void handle_error(void)
-{
-	int mode = verity_mode();
-	if (mode == DM_VERITY_MODE_RESTART) {
-		DMERR("triggering restart");
-		kernel_restart("dm-verity device corrupted");
-	} else {
-		DMERR("Mounting verity root failed");
-	}
-}
 
 static inline bool test_mult_overflow(sector_t a, u32 b)
 {
@@ -689,8 +743,8 @@ static int android_verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	dev_t uninitialized_var(dev);
 	struct android_metadata *metadata = NULL;
 	int err = 0, i, mode;
-	char *key_id, *table_ptr, dummy, *target_device,
-	*verity_table_args[VERITY_TABLE_ARGS + 2 + VERITY_TABLE_OPT_FEC_ARGS];
+	char *key_id = NULL, *table_ptr, dummy, *target_device;
+	char *verity_table_args[VERITY_TABLE_ARGS + 2 + VERITY_TABLE_OPT_FEC_ARGS];
 	/* One for specifying number of opt args and one for mode */
 	sector_t data_sectors;
 	u32 data_block_size;
@@ -711,15 +765,15 @@ static int android_verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 			handle_error();
 			return -EINVAL;
 		}
-	} else if (argc == 2)
-		key_id = argv[1];
-	else {
+		target_device = argv[0];
+	} else if (argc == 2) {
+		key_id = argv[0];
+		target_device = argv[1];
+	} else {
 		DMERR("Incorrect number of arguments");
 		handle_error();
 		return -EINVAL;
 	}
-
-	target_device = argv[0];
 
 	dev = name_to_dev_t(target_device);
 	if (!dev) {
@@ -874,12 +928,11 @@ static int android_verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	}
 
 	err = verity_ctr(ti, no_of_args, verity_table_args);
-
-	if (err)
-		DMERR("android-verity failed to mount as verity target");
-	else {
+	if (err) {
+		DMERR("android-verity failed to create a verity target");
+	} else {
 		target_added = true;
-		DMINFO("android-verity mounted as verity target");
+		DMINFO("android-verity created as verity target");
 	}
 
 free_metadata:

@@ -1812,6 +1812,8 @@ int mdp3_put_img(struct mdp3_img_data *data, int client)
 			pr_err("invalid ion client\n");
 			return -ENOMEM;
 		}
+		MDSS_XLOG(data->srcp_dma_buf, data->addr, data->len, client,
+				data->mapped, data->skip_detach);
 		if (data->mapped) {
 			mdss_smmu_unmap_dma_buf(data->srcp_table,
 						dom, dir,
@@ -1916,6 +1918,13 @@ done:
 	} else {
 		mdp3_put_img(data, client);
 		return -EINVAL;
+	}
+	if (img->flags & MDP_MEMORY_ID_TYPE_FB) {
+		MDSS_XLOG(img->memory_id, data->addr, data->len, fb_num);
+	} else if (iclient) {
+		MDSS_XLOG(img->memory_id, data->srcp_dma_buf, data->addr,
+				data->len, client, data->mapped,
+				data->skip_detach);
 	}
 	return ret;
 
@@ -2262,7 +2271,8 @@ static int mdp3_continuous_splash_on(struct mdss_panel_data *pdata)
 		pr_err("invalid bus handle %d\n", bus_handle->handle);
 		return -EINVAL;
 	}
-	mdp3_calc_dma_res(panel_info, &mdp_clk_rate, &ab, &ib, panel_info->bpp);
+	mdp3_calc_dma_res(panel_info, &mdp_clk_rate, &ab,
+					&ib, MAX_BPP_SUPPORTED);
 
 	mdp3_clk_set_rate(MDP3_CLK_VSYNC, MDP_VSYNC_CLK_RATE,
 			MDP3_CLIENT_DMA_P);
@@ -2384,6 +2394,8 @@ static int mdp3_debug_init(struct platform_device *pdev)
 	int rc;
 	struct mdss_data_type *mdata;
 	struct mdss_debug_data *mdd;
+	struct mdss_debug_base *mdp_dbg_blk = NULL;
+	struct mdss_debug_base *vbif_dbg_blk = NULL;
 
 	mdata = devm_kzalloc(&pdev->dev, sizeof(*mdata), GFP_KERNEL);
 	if (!mdata)

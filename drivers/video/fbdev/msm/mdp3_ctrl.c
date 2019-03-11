@@ -28,8 +28,6 @@
 #include "mdp3_ppp.h"
 #include "mdss_smmu.h"
 
-#define VSYNC_EXPIRE_TICK	4
-
 static void mdp3_ctrl_pan_display(struct msm_fb_data_type *mfd);
 static int mdp3_overlay_unset(struct msm_fb_data_type *mfd, int ndx);
 static int mdp3_histogram_stop(struct mdp3_session_data *session,
@@ -140,7 +138,6 @@ int mdp3_ctrl_notify(struct mdp3_session_data *ses, int event)
 static void mdp3_dispatch_dma_done(struct work_struct *work)
 {
 	struct mdp3_session_data *session;
-	int cnt = 0;
 
 	pr_debug("%s\n", __func__);
 	session = container_of(work, struct mdp3_session_data,
@@ -188,6 +185,7 @@ retry_dma_done:
 			panel = session->panel;
 			pr_debug("cmd kickoff timed out (%d)\n", rc);
 			dmap_busy = session->dma->busy();
+			MDSS_XLOG(0x222, dmap_busy);
 			if (dmap_busy) {
 				if (--retry_count) {
 					pr_err("dmap is busy, retry %d\n",
@@ -236,6 +234,8 @@ void mdp3_ctrl_reset_countdown(struct mdp3_session_data *session,
 {
 	if (mdp3_ctrl_get_intf_type(mfd) == MDP3_DMA_OUTPUT_SEL_DSI_CMD)
 		atomic_set(&session->vsync_countdown, VSYNC_EXPIRE_TICK);
+
+	MDSS_XLOG(atomic_read(&session->vsync_countdown));
 }
 
 static int mdp3_ctrl_vsync_enable(struct msm_fb_data_type *mfd, int enable)
@@ -282,7 +282,7 @@ static int mdp3_ctrl_vsync_enable(struct msm_fb_data_type *mfd, int enable)
 			&& (mdp3_session->vsync_before_commit ||
 			!mdp3_session->intf->active)) {
 		mod_timer(&mdp3_session->vsync_timer,
-			jiffies + msecs_to_jiffies(mdp3_session->vsync_period));
+		jiffies + msecs_to_jiffies(mdp3_session->dma->vsync_period));
 	} else if (enable && !mdp3_session->clk_on) {
 		mdp3_ctrl_reset_countdown(mdp3_session, mfd);
 		mdp3_ctrl_clk_enable(mfd, 1);
@@ -301,7 +301,7 @@ void mdp3_vsync_timer_func(unsigned long arg)
 		pr_debug("mdp3_vsync_timer_func trigger\n");
 		vsync_notify_handler(session);
 		mod_timer(&session->vsync_timer,
-			jiffies + msecs_to_jiffies(session->vsync_period));
+			jiffies + msecs_to_jiffies(session->dma->vsync_period));
 	}
 }
 
@@ -699,6 +699,13 @@ static int mdp3_ctrl_dma_init(struct msm_fb_data_type *mfd,
 	te.hw_vsync_mode = panel_info->mipi.hw_vsync_mode;
 	te.tear_check_en = panel_info->te.tear_check_en;
 	te.sync_cfg_height = panel_info->te.sync_cfg_height;
+
+	/* For mdp3, max. value of CFG_HEIGHT is 0x7ff,
+	 * for mdp5, max. value of CFG_HEIGHT is 0xffff.
+	 */
+	if (te.sync_cfg_height > 0x7ff)
+		te.sync_cfg_height = 0x7ff;
+
 	te.vsync_init_val = panel_info->te.vsync_init_val;
 	te.sync_threshold_start = panel_info->te.sync_threshold_start;
 	te.sync_threshold_continue = panel_info->te.sync_threshold_continue;
@@ -739,6 +746,7 @@ static int mdp3_ctrl_on(struct msm_fb_data_type *mfd)
 	int rc = 0;
 	struct mdp3_session_data *mdp3_session;
 	struct mdss_panel_data *panel;
+	u32 framerate = 0;
 
 	pr_debug("mdp3_ctrl_on\n");
 	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
@@ -870,6 +878,12 @@ on_error:
 		pm_runtime_put(&mdp3_res->pdev->dev);
 	}
 end:
+	framerate = mdss_panel_get_framerate(mfd->panel_info,
+			FPS_RESOLUTION_HZ);
+	if (framerate != 0)
+		mdp3_session->dma->vsync_period = DIV_ROUND_UP(1000, framerate);
+
+	MDSS_XLOG(XLOG_FUNC_EXIT, __LINE__, mfd->panel_power_state, framerate);
 	mutex_unlock(&mdp3_session->lock);
 	return rc;
 }
@@ -880,6 +894,7 @@ static int mdp3_ctrl_off(struct msm_fb_data_type *mfd)
 	bool intf_stopped = true;
 	struct mdp3_session_data *mdp3_session;
 	struct mdss_panel_data *panel;
+	u32 framerate = 0;
 
 	pr_debug("mdp3_ctrl_off\n");
 	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
@@ -1285,6 +1300,9 @@ static int mdp3_ctrl_display_commit_kickoff(struct msm_fb_data_type *mfd,
 			pr_err("fail to reset display\n");
 			return -EINVAL;
 		}
+		if ((mdp3_session->dma->roi.x || mdp3_session->dma->roi.y) &&
+			panel_info->partial_update_enabled)
+			mdp3_session->dma->update_src_cfg = true;
 	}
 
 	mutex_lock(&mdp3_session->lock);
@@ -1352,9 +1370,15 @@ static int mdp3_ctrl_display_commit_kickoff(struct msm_fb_data_type *mfd,
 	}
 
 	mdp3_session->vsync_before_commit = 0;
+	prev_bl = mfd->bl_level;
 	if (!splash_done || mdp3_session->esd_recovery == true) {
-		if (panel && panel->set_backlight)
-			panel->set_backlight(panel, panel->panel_info.bl_max);
+		if (panel && panel->set_backlight) {
+			if (mdp3_session->esd_recovery == true && prev_bl > 0)
+				panel->set_backlight(panel, prev_bl);
+			else
+				panel->set_backlight(panel,
+					panel->panel_info.bl_max);
+		}
 		splash_done = true;
 		mdp3_session->esd_recovery = false;
 	}
@@ -2566,7 +2590,7 @@ int mdp3_wait_for_dma_done(struct mdp3_session_data *session)
 
 	if (session->dma_active) {
 		rc = wait_for_completion_timeout(&session->dma_completion,
-			KOFF_TIMEOUT);
+			 dma_timeout_value(session->dma));
 		if (rc > 0) {
 			session->dma_active = 0;
 			rc = 0;
@@ -2666,6 +2690,7 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 		pr_err("fail to init dma\n");
 		goto init_done;
 	}
+	mdp3_session->dma->session = mdp3_session;
 
 	intf_type = mdp3_ctrl_get_intf_type(mfd);
 	mdp3_session->intf = mdp3_get_display_intf(intf_type);

@@ -124,12 +124,16 @@ static inline void DEINIT_MSM_VIDC_LIST(struct msm_vidc_list *mlist)
 {
 	mutex_destroy(&mlist->lock);
 }
-
 enum buffer_owner {
 	DRIVER,
 	FIRMWARE,
 	CLIENT,
 	MAX_OWNER
+};
+
+struct eos_buf {
+	struct list_head list;
+	struct msm_smem smem;
 };
 
 struct internal_buf {
@@ -168,6 +172,7 @@ struct session_prop {
 	u32 extradata[MAX_PORT_NUM];
 	u32 fps;
 	u32 bitrate;
+	u32 operating_rate;
 };
 
 struct buf_queue {
@@ -273,6 +278,7 @@ struct msm_vidc_inst {
 	struct msm_vidc_list persistbufs;
 	struct msm_vidc_list pending_getpropq;
 	struct msm_vidc_list outputbufs;
+	struct msm_vidc_list eosbufs;
 	struct msm_vidc_list registeredbufs;
 	struct buffer_requirements buff_req;
 	void *mem_client;

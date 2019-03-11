@@ -25,6 +25,7 @@
 #include "cam_debug_util.h"
 #include "cam_packet_util.h"
 #include "cam_context_utils.h"
+#include "cam_common_util.h"
 
 static const char isp_dev_name[] = "isp";
 
@@ -381,7 +382,7 @@ static int __cam_isp_ctx_handle_buf_done_in_activated_state(
 			continue;
 		}
 
-		if (!bubble_state) {
+		if (!req_isp->bubble_detected) {
 			CAM_DBG(CAM_ISP,
 				"Sync with success: req %lld res 0x%x fd 0x%x",
 				req->request_id,
@@ -408,15 +409,14 @@ static int __cam_isp_ctx_handle_buf_done_in_activated_state(
 		} else {
 			/*
 			 * Ignore the buffer done if bubble detect is on
-			 * In most case, active list should be empty when
-			 * bubble detects. But for safety, we just move the
-			 * current active request to the pending list here.
+			 * Increment the ack number here, and queue the
+			 * request back to pending list whenever all the
+			 * buffers are done.
 			 */
+			req_isp->num_acked++;
 			CAM_DBG(CAM_ISP,
 				"buf done with bubble state %d recovery %d",
 				bubble_state, req_isp->bubble_report);
-			list_del_init(&req->list);
-			list_add(&req->list, &ctx->pending_req_list);
 			continue;
 		}
 
@@ -437,10 +437,25 @@ static int __cam_isp_ctx_handle_buf_done_in_activated_state(
 			req_isp->num_fence_map_out);
 		WARN_ON(req_isp->num_acked > req_isp->num_fence_map_out);
 	}
-	if (req_isp->num_acked == req_isp->num_fence_map_out) {
+
+	if (req_isp->num_acked != req_isp->num_fence_map_out)
+		return rc;
+
+	ctx_isp->active_req_cnt--;
+
+	if (req_isp->bubble_detected && req_isp->bubble_report) {
+		req_isp->num_acked = 0;
+		req_isp->bubble_detected = false;
+		list_del_init(&req->list);
+		list_add(&req->list, &ctx->pending_req_list);
+
+		CAM_DBG(CAM_REQ,
+			"Move active request %lld to pending list(cnt = %d) [bubble recovery]",
+			 req->request_id, ctx_isp->active_req_cnt);
+	} else {
 		list_del_init(&req->list);
 		list_add_tail(&req->list, &ctx->free_req_list);
-		ctx_isp->active_req_cnt--;
+
 		CAM_DBG(CAM_REQ,
 			"Move active request %lld to free list(cnt = %d) [all fences done]",
 			 req->request_id, ctx_isp->active_req_cnt);
@@ -738,6 +753,7 @@ static int __cam_isp_ctx_epoch_in_applied(struct cam_isp_context *ctx_isp,
 	req = list_first_entry(&ctx->wait_req_list, struct cam_ctx_request,
 		list);
 	req_isp = (struct cam_isp_ctx_req *)req->req_priv;
+	req_isp->bubble_detected = true;
 
 	CAM_DBG(CAM_ISP, "Report Bubble flag %d", req_isp->bubble_report);
 	if (req_isp->bubble_report && ctx->ctx_crm_intf &&
@@ -755,17 +771,18 @@ static int __cam_isp_ctx_epoch_in_applied(struct cam_isp_context *ctx_isp,
 		CAM_DBG(CAM_ISP, "Notify CRM about Bubble frame %lld",
 			ctx_isp->frame_id);
 	} else {
-		/*
-		 * Since can not bubble report, always move the request to
-		 * active list.
-		 */
-		list_del_init(&req->list);
-		list_add_tail(&req->list, &ctx->active_req_list);
-		ctx_isp->active_req_cnt++;
-		CAM_DBG(CAM_REQ, "move request %lld to active list(cnt = %d)",
-			 req->request_id, ctx_isp->active_req_cnt);
 		req_isp->bubble_report = 0;
 	}
+
+	/*
+	 * Always move the request to active list. Let buf done
+	 * function handles the rest.
+	 */
+	CAM_DBG(CAM_REQ, "move request %lld to active list(cnt = %d)",
+		req->request_id, ctx_isp->active_req_cnt);
+	ctx_isp->active_req_cnt++;
+	list_del_init(&req->list);
+	list_add_tail(&req->list, &ctx->active_req_list);
 
 	if (req->request_id > ctx_isp->reported_req_id) {
 		request_id = req->request_id;
@@ -888,7 +905,7 @@ static int __cam_isp_ctx_epoch_in_bubble_applied(
 	req = list_first_entry(&ctx->wait_req_list, struct cam_ctx_request,
 		list);
 	req_isp = (struct cam_isp_ctx_req *)req->req_priv;
-	list_del_init(&req->list);
+	req_isp->bubble_detected = true;
 
 	if (req_isp->bubble_report && ctx->ctx_crm_intf &&
 		ctx->ctx_crm_intf->notify_err) {
@@ -904,16 +921,18 @@ static int __cam_isp_ctx_epoch_in_bubble_applied(
 			"Notify CRM about Bubble req_id %llu frame %lld",
 			req->request_id, ctx_isp->frame_id);
 	} else {
-		/*
-		 * If we can not report bubble, then treat it as if no bubble
-		 * report. Just move the req to active list.
-		 */
-		list_add_tail(&req->list, &ctx->active_req_list);
-		ctx_isp->active_req_cnt++;
-		CAM_DBG(CAM_ISP, "move request %lld to active list(cnt = %d)",
-			 req->request_id, ctx_isp->active_req_cnt);
 		req_isp->bubble_report = 0;
 	}
+
+	/*
+	 * Always move the request to active list. Let buf done
+	 * function handles the rest.
+	 */
+	CAM_DBG(CAM_ISP, "move request %lld to active list(cnt = %d)",
+		req->request_id, ctx_isp->active_req_cnt);
+	ctx_isp->active_req_cnt++;
+	list_del_init(&req->list);
+	list_add_tail(&req->list, &ctx->active_req_list);
 
 	if (!req_isp->bubble_report) {
 		if (req->request_id > ctx_isp->reported_req_id) {
@@ -1204,7 +1223,7 @@ static int __cam_isp_ctx_apply_req_in_activated_state(
 		ctx_isp->substate_activated);
 	req_isp = (struct cam_isp_ctx_req *) req->req_priv;
 
-	if (ctx_isp->active_req_cnt >=  2) {
+	if (ctx_isp->active_req_cnt >=  4) {
 		CAM_ERR_RATE_LIMIT(CAM_ISP,
 			"Reject apply request (id %lld) due to congestion(cnt = %d)",
 			req->request_id,
@@ -1417,6 +1436,7 @@ static int __cam_isp_ctx_flush_req_in_top_state(
 		CAM_DBG(CAM_ISP, "try to flush active list");
 		rc = __cam_isp_ctx_flush_req(ctx, &ctx->active_req_list,
 		flush_req);
+		ctx_isp->active_req_cnt = 0;
 		spin_unlock_bh(&ctx->lock);
 
 		/* Start hw */
@@ -1615,12 +1635,12 @@ static int __cam_isp_ctx_rdi_only_sof_in_bubble_applied(
 	CAM_DBG(CAM_ISP, "frame id: %lld time stamp:0x%llx",
 		ctx_isp->frame_id, ctx_isp->sof_timestamp_val);
 
-	if (list_empty(&ctx->pending_req_list)) {
+	if (list_empty(&ctx->wait_req_list)) {
 		/*
 		 * If no pending req in epoch, this is an error case.
 		 * The recovery is to go back to sof state
 		 */
-		CAM_ERR(CAM_ISP, "No pending request");
+		CAM_ERR(CAM_ISP, "No wait request");
 		ctx_isp->substate_activated = CAM_ISP_CTX_ACTIVATED_SOF;
 
 		/* Send SOF event as empty frame*/
@@ -1630,9 +1650,10 @@ static int __cam_isp_ctx_rdi_only_sof_in_bubble_applied(
 		goto end;
 	}
 
-	req = list_first_entry(&ctx->pending_req_list, struct cam_ctx_request,
+	req = list_first_entry(&ctx->wait_req_list, struct cam_ctx_request,
 		list);
 	req_isp = (struct cam_isp_ctx_req *)req->req_priv;
+	req_isp->bubble_detected = true;
 
 	CAM_DBG(CAM_ISP, "Report Bubble flag %d", req_isp->bubble_report);
 	if (req_isp->bubble_report && ctx->ctx_crm_intf &&
@@ -1647,17 +1668,18 @@ static int __cam_isp_ctx_rdi_only_sof_in_bubble_applied(
 		CAM_DBG(CAM_ISP, "Notify CRM about Bubble frame %lld",
 			ctx_isp->frame_id);
 	} else {
-		/*
-		 * Since can not bubble report, always move the request to
-		 * active list.
-		 */
-		list_del_init(&req->list);
-		list_add_tail(&req->list, &ctx->active_req_list);
-		ctx_isp->active_req_cnt++;
-		CAM_DBG(CAM_ISP, "move request %lld to active list(cnt = %d)",
-			req->request_id, ctx_isp->active_req_cnt);
 		req_isp->bubble_report = 0;
 	}
+
+	/*
+	 * Always move the request to active list. Let buf done
+	 * function handles the rest.
+	 */
+	ctx_isp->active_req_cnt++;
+	list_del_init(&req->list);
+	list_add_tail(&req->list, &ctx->active_req_list);
+	CAM_DBG(CAM_ISP, "move request %lld to active list(cnt = %d)",
+			req->request_id, ctx_isp->active_req_cnt);
 
 	if (!req_isp->bubble_report) {
 		if (req->request_id > ctx_isp->reported_req_id) {
@@ -2014,7 +2036,7 @@ static int __cam_isp_ctx_config_dev_in_top_state(
 	int rc = 0, i;
 	struct cam_ctx_request           *req = NULL;
 	struct cam_isp_ctx_req           *req_isp;
-	uint64_t                          packet_addr;
+	uintptr_t                         packet_addr;
 	struct cam_packet                *packet;
 	size_t                            len = 0;
 	struct cam_hw_prepare_update_args cfg;
@@ -2044,16 +2066,16 @@ static int __cam_isp_ctx_config_dev_in_top_state(
 	/* for config dev, only memory handle is supported */
 	/* map packet from the memhandle */
 	rc = cam_mem_get_cpu_buf((int32_t) cmd->packet_handle,
-		(uint64_t *) &packet_addr, &len);
+		&packet_addr, &len);
 	if (rc != 0) {
 		CAM_ERR(CAM_ISP, "Can not get packet address");
 		rc = -EINVAL;
 		goto free_req;
 	}
 
-	packet = (struct cam_packet *) (packet_addr + cmd->offset);
+	packet = (struct cam_packet *)(packet_addr + (uint32_t)cmd->offset);
 	CAM_DBG(CAM_ISP, "pack_handle %llx", cmd->packet_handle);
-	CAM_DBG(CAM_ISP, "packet address is 0x%llx", packet_addr);
+	CAM_DBG(CAM_ISP, "packet address is 0x%zx", packet_addr);
 	CAM_DBG(CAM_ISP, "packet with length %zu, offset 0x%llx",
 		len, cmd->offset);
 	CAM_DBG(CAM_ISP, "Packet request id %lld",
@@ -2087,6 +2109,16 @@ static int __cam_isp_ctx_config_dev_in_top_state(
 	req_isp->num_fence_map_out = cfg.num_out_map_entries;
 	req_isp->num_fence_map_in = cfg.num_in_map_entries;
 	req_isp->num_acked = 0;
+	req_isp->bubble_detected = false;
+
+	for (i = 0; i < req_isp->num_fence_map_out; i++) {
+		rc = cam_sync_get_obj_ref(req_isp->fence_map_out[i].sync_id);
+		if (rc) {
+			CAM_ERR(CAM_ISP, "Can't get ref for fence %d",
+				req_isp->fence_map_out[i].sync_id);
+			goto put_ref;
+		}
+	}
 
 	for (i = 0; i < req_isp->num_fence_map_out; i++) {
 		rc = cam_sync_get_obj_ref(req_isp->fence_map_out[i].sync_id);
@@ -2208,7 +2240,7 @@ static int __cam_isp_ctx_acquire_dev_in_available(struct cam_context *ctx,
 	CAM_DBG(CAM_ISP, "start copy %d resources from user",
 		 cmd->num_resources);
 
-	if (copy_from_user(isp_res, (void __user *)cmd->resource_hdl,
+	if (copy_from_user(isp_res, u64_to_user_ptr(cmd->resource_hdl),
 		sizeof(*isp_res)*cmd->num_resources)) {
 		rc = -EFAULT;
 		goto free_res;
@@ -2217,7 +2249,7 @@ static int __cam_isp_ctx_acquire_dev_in_available(struct cam_context *ctx,
 	param.context_data = ctx;
 	param.event_cb = ctx->irq_cb_intf;
 	param.num_acq = cmd->num_resources;
-	param.acquire_info = (uint64_t) isp_res;
+	param.acquire_info = (uintptr_t) isp_res;
 
 	/* call HW manager to reserve the resource */
 	rc = ctx->hw_mgr_intf->hw_acquire(ctx->hw_mgr_intf->hw_mgr_priv,
