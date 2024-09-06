@@ -11,6 +11,7 @@
 #include <linux/syscalls.h>
 #include <linux/mempolicy.h>
 #include <linux/page-isolation.h>
+#include <linux/pgsize_migration.h>
 #include <linux/page_idle.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/hugetlb.h>
@@ -328,8 +329,10 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 	struct page *page = NULL;
 	LIST_HEAD(page_list);
 	bool allow_shared = false;
+	bool abort_madvise = false;
 
-	if (fatal_signal_pending(current))
+	trace_android_vh_madvise_cold_or_pageout_abort(vma, &abort_madvise);
+	if (fatal_signal_pending(current) || abort_madvise)
 		return -EINTR;
 
 	trace_android_vh_madvise_cold_or_pageout(vma, &allow_shared);
@@ -790,6 +793,8 @@ static int madvise_free_single_vma(struct vm_area_struct *vma,
 static long madvise_dontneed_single_vma(struct vm_area_struct *vma,
 					unsigned long start, unsigned long end)
 {
+	madvise_vma_pad_pages(vma, start, end);
+
 	zap_page_range(vma, start, end - start);
 	return 0;
 }

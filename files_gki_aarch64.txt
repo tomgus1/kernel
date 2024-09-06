@@ -9,8 +9,6 @@ arch/arm64/crypto/chacha-neon-glue.c
 arch/arm64/crypto/ghash-ce-core.S
 arch/arm64/crypto/ghash-ce-glue.c
 arch/arm64/crypto/poly1305-glue.c
-arch/arm64/crypto/polyval-ce-core.S
-arch/arm64/crypto/polyval-ce-glue.c
 arch/arm64/crypto/sha256-glue.c
 arch/arm64/crypto/sha2-ce-core.S
 arch/arm64/crypto/sha2-ce-glue.c
@@ -551,7 +549,6 @@ crypto/geniv.c
 crypto/gf128mul.c
 crypto/ghash-generic.c
 crypto/hash_info.c
-crypto/hctr2.c
 crypto/hmac.c
 crypto/internal.h
 crypto/jitterentropy.c
@@ -564,7 +561,6 @@ crypto/lzo-rle.c
 crypto/md5.c
 crypto/nhpoly1305.c
 crypto/poly1305_generic.c
-crypto/polyval-generic.c
 crypto/proc.c
 crypto/rng.c
 crypto/rsa.c
@@ -580,7 +576,6 @@ crypto/shash.c
 crypto/skcipher.c
 crypto/testmgr.c
 crypto/xcbc.c
-crypto/xctr.c
 crypto/xts.c
 crypto/zstd.c
 drivers/amba/bus.c
@@ -800,6 +795,7 @@ drivers/firmware/arm_scmi/clock.c
 drivers/firmware/arm_scmi/common.h
 drivers/firmware/arm_scmi/driver.c
 drivers/firmware/arm_scmi/mailbox.c
+drivers/firmware/arm_scmi/msg.c
 drivers/firmware/arm_scmi/notify.c
 drivers/firmware/arm_scmi/notify.h
 drivers/firmware/arm_scmi/perf.c
@@ -809,6 +805,7 @@ drivers/firmware/arm_scmi/sensors.c
 drivers/firmware/arm_scmi/shmem.c
 drivers/firmware/arm_scmi/smc.c
 drivers/firmware/arm_scmi/system.c
+drivers/firmware/arm_scmi/virtio.c
 drivers/firmware/arm_scmi/voltage.c
 drivers/firmware/arm_scpi.c
 drivers/firmware/efi/arm-runtime.c
@@ -1433,6 +1430,7 @@ drivers/pinctrl/sunxi/pinctrl-sun50i-h616.c
 drivers/pinctrl/sunxi/pinctrl-sun50i-h616-r.c
 drivers/pinctrl/sunxi/pinctrl-sunxi.c
 drivers/pinctrl/sunxi/pinctrl-sunxi.h
+drivers/powercap/idle_inject.c
 drivers/powercap/powercap_sys.c
 drivers/power/reset/hisi-reboot.c
 drivers/power/reset/syscon-reboot.c
@@ -1560,6 +1558,7 @@ drivers/staging/android/debug_kinfo.c
 drivers/staging/android/debug_kinfo.h
 drivers/staging/android/uapi/ashmem.h
 drivers/thermal/cpufreq_cooling.c
+drivers/thermal/cpuidle_cooling.c
 drivers/thermal/devfreq_cooling.c
 drivers/thermal/gov_power_allocator.c
 drivers/thermal/gov_step_wise.c
@@ -1738,6 +1737,7 @@ drivers/usb/host/xhci-mem.c
 drivers/usb/host/xhci-mvebu.h
 drivers/usb/host/xhci-pci.c
 drivers/usb/host/xhci-pci.h
+drivers/usb/host/xhci-pci-renesas.c
 drivers/usb/host/xhci-plat.c
 drivers/usb/host/xhci-plat.h
 drivers/usb/host/xhci-rcar.h
@@ -1788,7 +1788,6 @@ drivers/usb/typec/mux.c
 drivers/usb/typec/mux.h
 drivers/usb/typec/port-mapper.c
 drivers/usb/typec/tcpm/tcpci.c
-drivers/usb/typec/tcpm/tcpci.h
 drivers/usb/typec/tcpm/tcpm.c
 drivers/usb/typec/ucsi/psy.c
 drivers/usb/typec/ucsi/trace.c
@@ -2254,7 +2253,6 @@ include/asm-generic/bitops/non-atomic.h
 include/asm-generic/bitops/sched.h
 include/asm-generic/bitsperlong.h
 include/asm-generic/bug.h
-include/asm-generic/bugs.h
 include/asm-generic/cacheflush.h
 include/asm-generic/checksum.h
 include/asm-generic/compat.h
@@ -2371,7 +2369,6 @@ include/crypto/nhpoly1305.h
 include/crypto/null.h
 include/crypto/pkcs7.h
 include/crypto/poly1305.h
-include/crypto/polyval.h
 include/crypto/public_key.h
 include/crypto/rng.h
 include/crypto/scatterwalk.h
@@ -2836,6 +2833,7 @@ include/linux/i3c/master.h
 include/linux/i8042.h
 include/linux/icmp.h
 include/linux/icmpv6.h
+include/linux/idle_inject.h
 include/linux/idr.h
 include/linux/ieee80211.h
 include/linux/ieee802154.h
@@ -3206,6 +3204,7 @@ include/linux/perf_regs.h
 include/linux/personality.h
 include/linux/pfn.h
 include/linux/pfn_t.h
+include/linux/pgsize_migration.h
 include/linux/pgtable.h
 include/linux/phy_fixed.h
 include/linux/phy.h
@@ -3584,6 +3583,7 @@ include/linux/usb/quirks.h
 include/linux/usb/r8152.h
 include/linux/usb/role.h
 include/linux/usb/storage.h
+include/linux/usb/tcpci.h
 include/linux/usb/tcpm.h
 include/linux/usb/typec_altmode.h
 include/linux/usb/typec_dp.h
@@ -3680,6 +3680,9 @@ include/media/videobuf2-memops.h
 include/media/videobuf2-v4l2.h
 include/media/videobuf2-vmalloc.h
 include/net/6lowpan.h
+include/net/9p/9p.h
+include/net/9p/client.h
+include/net/9p/transport.h
 include/net/act_api.h
 include/net/addrconf.h
 include/net/af_ieee802154.h
@@ -3970,6 +3973,7 @@ include/sound/timer.h
 include/sound/tlv.h
 include/trace/bpf_probe.h
 include/trace/define_trace.h
+include/trace/events/9p.h
 include/trace/events/alarmtimer.h
 include/trace/events/android_fs.h
 include/trace/events/android_fs_template.h
@@ -3985,6 +3989,7 @@ include/trace/events/compaction.h
 include/trace/events/cpuhp.h
 include/trace/events/damon.h
 include/trace/events/devfreq.h
+include/trace/events/devlink.h
 include/trace/events/dma_fence.h
 include/trace/events/erofs.h
 include/trace/events/error_report.h
@@ -4073,6 +4078,7 @@ include/trace/hooks/cpuidle.h
 include/trace/hooks/cpuidle_psci.h
 include/trace/hooks/creds.h
 include/trace/hooks/debug.h
+include/trace/hooks/delayacct.h
 include/trace/hooks/direct_io.h
 include/trace/hooks/dmabuf.h
 include/trace/hooks/dm.h
@@ -4119,6 +4125,7 @@ include/trace/hooks/sysrqcrash.h
 include/trace/hooks/thermal.h
 include/trace/hooks/timekeeping.h
 include/trace/hooks/timer.h
+include/trace/hooks/tmpfile.h
 include/trace/hooks/topology.h
 include/trace/hooks/traps.h
 include/trace/hooks/ufshcd.h
@@ -4567,6 +4574,7 @@ include/uapi/linux/virtio_fs.h
 include/uapi/linux/virtio_ids.h
 include/uapi/linux/virtio_net.h
 include/uapi/linux/virtio_ring.h
+include/uapi/linux/virtio_scmi.h
 include/uapi/linux/virtio_types.h
 include/uapi/linux/virtio_vsock.h
 include/uapi/linux/vmcore.h
@@ -4702,6 +4710,7 @@ kernel/configs.c
 kernel/cpu.c
 kernel/cpu_pm.c
 kernel/cred.c
+kernel/delayacct.c
 kernel/dma/coherent.c
 kernel/dma/contiguous.c
 kernel/dma/debug.h
@@ -4823,6 +4832,7 @@ kernel/rcu/tree_stall.h
 kernel/rcu/update.c
 kernel/reboot.c
 kernel/regset.c
+kernel/relay.c
 kernel/resource.c
 kernel/sched/autogroup.h
 kernel/sched/clock.c
@@ -5251,6 +5261,7 @@ mm/percpu.c
 mm/percpu-internal.h
 mm/percpu-vm.c
 mm/pgalloc-track.h
+mm/pgsize_migration.c
 mm/pgtable-generic.c
 mm/process_vm_access.c
 mm/readahead.c
@@ -5302,6 +5313,14 @@ net/8021q/vlanproc.h
 net/802/p8022.c
 net/802/psnap.c
 net/802/stp.c
+net/9p/client.c
+net/9p/error.c
+net/9p/mod.c
+net/9p/protocol.c
+net/9p/protocol.h
+net/9p/trans_common.c
+net/9p/trans_common.h
+net/9p/trans_fd.c
 net/bluetooth/a2mp.h
 net/bluetooth/af_bluetooth.c
 net/bluetooth/amp.h
@@ -5375,6 +5394,7 @@ net/core/datagram.h
 net/core/dev_addr_lists.c
 net/core/dev.c
 net/core/dev_ioctl.c
+net/core/devlink.c
 net/core/dst.c
 net/core/dst_cache.c
 net/core/fib_notifier.c
@@ -5523,6 +5543,7 @@ net/ipv4/proc.c
 net/ipv4/protocol.c
 net/ipv4/raw.c
 net/ipv4/route.c
+net/ipv4/syncookies.c
 net/ipv4/sysctl_net_ipv4.c
 net/ipv4/tcp_bpf.c
 net/ipv4/tcp.c
@@ -5612,6 +5633,7 @@ net/ipv6/route.c
 net/ipv6/rpl.c
 net/ipv6/seg6.c
 net/ipv6/sit.c
+net/ipv6/syncookies.c
 net/ipv6/sysctl_net_ipv6.c
 net/ipv6/tcp_ipv6.c
 net/ipv6/tcpv6_offload.c
@@ -5774,7 +5796,6 @@ net/sched/cls_bpf.c
 net/sched/cls_flow.c
 net/sched/cls_fw.c
 net/sched/cls_matchall.c
-net/sched/cls_tcindex.c
 net/sched/cls_u32.c
 net/sched/ematch.c
 net/sched/em_cmp.c
@@ -5874,7 +5895,7 @@ net/xfrm/xfrm_hash.c
 net/xfrm/xfrm_hash.h
 net/xfrm/xfrm_inout.h
 net/xfrm/xfrm_input.c
-net/xfrm/xfrm_interface.c
+net/xfrm/xfrm_interface_core.c
 net/xfrm/xfrm_ipcomp.c
 net/xfrm/xfrm_output.c
 net/xfrm/xfrm_policy.c

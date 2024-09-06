@@ -145,6 +145,11 @@ static inline int wcd_usbss_register_update(uint32_t reg_arr[][2], bool write, s
 {
 	return 0;
 }
+
+int wcd_usbss_register_update(uint32_t reg_arr[][2], bool write, size_t arr_size)
+{
+	return 0;
+}
 #endif /* CONFIG_QCOM_WCD_USBSS_I2C */
 
 #endif /* WCD939X_I2C_H */

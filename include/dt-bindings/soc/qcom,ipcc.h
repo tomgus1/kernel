@@ -45,6 +45,10 @@
 #define IPCC_CLIENT_WPSS		24
 #define IPCC_CLIENT_BROADCAST	0xF000
 #define IPCC_CLIENT_MAX			26 /* Used by driver only */
+#define IPCC_CLIENT_SAIL0		27
+#define IPCC_CLIENT_SAIL1		28
+#define IPCC_CLIENT_SAIL2		29
+#define IPCC_CLIENT_SAIL3		30
 #define IPCC_CLIENT_GPDSP0		31
 #define IPCC_CLIENT_GPDSP1		32
 #endif

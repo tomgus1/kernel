@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/debugfs.h>
@@ -37,6 +37,9 @@
 #define VIRTIO_FASTRPC_F_VQUEUE_SETTING			7
 /* indicates fastrpc_mmap/fastrpc_munmap is supported */
 #define VIRTIO_FASTRPC_F_MEM_MAP			8
+/* indicates signed PD control is available in config space */
+#define VIRTIO_FASTRPC_F_SIGNED_PD_CONTROL		9
+
 
 #define NUM_DEVICES			2 /* adsprpc-smd, adsprpc-smd-secure */
 
@@ -58,7 +61,7 @@
  * need to be matched with BE_MINOR_VER. And it will return to 0 when
  * FE_MAJOR_VER is increased.
  */
-#define FE_MINOR_VER 0x2
+#define FE_MINOR_VER 0x9
 #define FE_VERSION (FE_MAJOR_VER << 16 | FE_MINOR_VER)
 #define BE_MAJOR_VER(ver) (((ver) >> 16) & 0xffff)
 
@@ -66,6 +69,7 @@ struct virtio_fastrpc_config {
 	u32 version;
 	u32 domain_num;
 	u32 max_buf_size;
+	u32 signed_pd_control;
 } __packed;
 
 
@@ -99,6 +103,12 @@ static ssize_t vfastrpc_debugfs_read(struct file *filp, char __user *buffer,
 				"\n%s %d %s %d\n", "channel =", vfl->domain,
 				"proc_attr =", vfl->procattrs);
 
+		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
+			"\n========%s %s %s========\n", title,
+			" SESSION INFO ", title);
+		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
+				"\n%s %d %s %d\n", "tgid_frpc =", fl->tgid_frpc,
+				"sessionid =", fl->sessionid);
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"\n========%s %s %s========\n", title,
 			" LIST OF BUFS ", title);
@@ -336,8 +346,8 @@ static int vfastrpc_setmode_ioctl(unsigned long ioctl_param,
 			"multiple sessions not allowed for untrusted apps\n");
 		break;
 		}
-		fl->sessionid = 1;
-		fl->tgid |= (1 << SESSION_ID_INDEX);
+		if (!fl->multi_session_support)
+			fl->sessionid = 1;
 		break;
 	case FASTRPC_MODE_PROFILE:
 		fl->profile = (uint32_t)ioctl_param;
@@ -376,13 +386,12 @@ static int vfastrpc_control_ioctl(struct fastrpc_ioctl_control *cp,
 	return err;
 }
 
-static int vfastrpc_get_info_ioctl(void *param, struct vfastrpc_file *vfl)
+static int vfastrpc_get_info_ioctl(void *param, struct vfastrpc_file *vfl, bool is_compat)
 {
 	int err = 0;
 	uint32_t info;
-	struct fastrpc_file *fl = to_fastrpc_file(vfl);
 
-	K_COPY_FROM_USER(err, fl->is_compat, &info, param, sizeof(info));
+	K_COPY_FROM_USER(err, is_compat, &info, param, sizeof(info));
 	if (err)
 		return err;
 
@@ -390,7 +399,7 @@ static int vfastrpc_get_info_ioctl(void *param, struct vfastrpc_file *vfl)
 	if (err)
 		return err;
 
-	K_COPY_TO_USER(err, fl->is_compat, param, &info, sizeof(info));
+	K_COPY_TO_USER(err, is_compat, param, &info, sizeof(info));
 	return err;
 }
 
@@ -398,16 +407,15 @@ int fastrpc_get_info(struct fastrpc_file *fl, uint32_t *info)
 {
 	struct vfastrpc_file *vfl = to_vfastrpc_file(fl);
 
-	return vfastrpc_get_info_ioctl(info, vfl);
+	return vfastrpc_get_info_ioctl(info, vfl, true);
 }
 
 static int vfastrpc_init_ioctl(struct fastrpc_ioctl_init_attrs *init,
 		void *param, struct vfastrpc_file *vfl)
 {
 	int err = 0;
-	struct fastrpc_file *fl = to_fastrpc_file(vfl);
 
-	K_COPY_FROM_USER(err, fl->is_compat, init, param, sizeof(*init));
+	K_COPY_FROM_USER(err, 0, init, param, sizeof(*init));
 	if (err)
 		return err;
 
@@ -449,15 +457,15 @@ int fastrpc_internal_invoke(struct fastrpc_file *fl, uint32_t mode,
 {
 	struct vfastrpc_file *vfl = to_vfastrpc_file(fl);
 
-	return vfastrpc_internal_invoke(vfl, mode, inv);
+	return vfastrpc_internal_invoke(vfl, mode, inv, kernel);
 }
 
 int fastrpc_internal_invoke2(struct fastrpc_file *fl,
-				struct fastrpc_ioctl_invoke2 *inv2)
+				struct fastrpc_ioctl_invoke2 *inv2, bool is_compat)
 {
 	struct vfastrpc_file *vfl = to_vfastrpc_file(fl);
 
-	return vfastrpc_internal_invoke2(vfl, inv2);
+	return vfastrpc_internal_invoke2(vfl, inv2, is_compat);
 }
 
 int fastrpc_internal_munmap(struct fastrpc_file *fl,
@@ -539,6 +547,11 @@ int fastrpc_dspsignal_destroy(struct fastrpc_file *fl,
 	return -ENOTTY;
 }
 
+int fastrpc_check_pd_status(struct fastrpc_file *fl, char *sloc_name)
+{
+	return -ENOTTY;
+}
+
 int fastrpc_internal_mem_unmap(struct fastrpc_file *fl,
 				struct fastrpc_ioctl_mem_unmap *ud)
 {
@@ -608,7 +621,7 @@ static long vfastrpc_ioctl(struct file *file, unsigned int ioctl_num,
 		if (err)
 			goto bail;
 
-		err = vfastrpc_internal_invoke(vfl, fl->mode, &p.inv);
+		err = vfastrpc_internal_invoke(vfl, fl->mode, &p.inv, USER_MSG);
 		break;
 	case FASTRPC_IOCTL_INVOKE2:
 		K_COPY_FROM_USER(err, 0, &p.inv2, param,
@@ -617,7 +630,7 @@ static long vfastrpc_ioctl(struct file *file, unsigned int ioctl_num,
 			err = -EFAULT;
 			goto bail;
 		}
-		err = vfastrpc_internal_invoke2(vfl, &p.inv2);
+		err = vfastrpc_internal_invoke2(vfl, &p.inv2, false);
 		break;
 	case FASTRPC_IOCTL_MEM_MAP:
 	case FASTRPC_IOCTL_MEM_UNMAP:
@@ -635,7 +648,7 @@ static long vfastrpc_ioctl(struct file *file, unsigned int ioctl_num,
 		err = vfastrpc_control_ioctl(&p.cp, param, vfl);
 		break;
 	case FASTRPC_IOCTL_GETINFO:
-		err = vfastrpc_get_info_ioctl(param, vfl);
+		err = vfastrpc_get_info_ioctl(param, vfl, false);
 		break;
 	case FASTRPC_IOCTL_INIT:
 		p.init.attrs = 0;
@@ -713,16 +726,18 @@ static const struct file_operations fops = {
 static int recv_single(struct virt_msg_hdr *rsp, unsigned int len)
 {
 	struct vfastrpc_apps *me = &gfa;
-	struct virt_fastrpc_msg *msg;
+	struct virt_fastrpc_msg *msg = NULL;
+	unsigned long flags;
 
 	if (len != rsp->len) {
 		dev_err(me->dev, "msg %u len mismatch,expected %u but %d found\n",
 				rsp->cmd, rsp->len, len);
 		return -EINVAL;
 	}
-	spin_lock(&me->msglock);
+	spin_lock_irqsave(&me->msglock, flags);
+
 	msg = me->msgtable[rsp->msgid];
-	spin_unlock(&me->msglock);
+	spin_unlock_irqrestore(&me->msglock, flags);
 
 	if (!msg) {
 		dev_err(me->dev, "msg %u already free in table[%u]\n",
@@ -731,13 +746,13 @@ static int recv_single(struct virt_msg_hdr *rsp, unsigned int len)
 	}
 	msg->rxbuf = (void *)rsp;
 
+	if (msg->ctx)
+		trace_recv_single_end(msg->ctx);
+
 	if (msg->ctx && msg->ctx->asyncjob.isasyncjob)
 		vfastrpc_queue_completed_async_job(msg->ctx);
 	else
 		complete(&msg->work);
-
-	if (msg->ctx)
-		trace_recv_single_end(msg->ctx);
 
 	return 0;
 }
@@ -860,6 +875,7 @@ static int vfastrpc_channel_init(struct vfastrpc_apps *me)
 
 	me->channel = kcalloc(me->num_channels,
 			sizeof(struct vfastrpc_channel_ctx), GFP_KERNEL);
+	me->max_sess_per_proc = DEFAULT_MAX_SESS_PER_PROC;
 	if (!me->channel)
 		return -ENOMEM;
 	for (i = 0; i < me->num_channels; i++) {
@@ -871,6 +887,7 @@ static int vfastrpc_channel_init(struct vfastrpc_apps *me)
 			me->channel[i].secure = true;
 			me->channel[i].unsigned_support = false;
 		}
+		me->channel[i].sesscount = 0;
 	}
 	return 0;
 }
@@ -906,6 +923,7 @@ static int virt_fastrpc_probe(struct virtio_device *vdev)
 
 	memset(me, 0, sizeof(*me));
 	spin_lock_init(&me->msglock);
+	spin_lock_init(&me->hlock);
 
 	if (virtio_has_feature(vdev, VIRTIO_FASTRPC_F_INVOKE_ATTR))
 		me->has_invoke_attr = true;
@@ -921,6 +939,14 @@ static int virt_fastrpc_probe(struct virtio_device *vdev)
 
 	if (virtio_has_feature(vdev, VIRTIO_FASTRPC_F_MEM_MAP))
 		me->has_mem_map = true;
+
+	if (virtio_has_feature(vdev, VIRTIO_FASTRPC_F_SIGNED_PD_CONTROL)) {
+		virtio_cread(vdev, struct virtio_fastrpc_config, signed_pd_control,
+				&config.signed_pd_control);
+		me->signed_pd_control = config.signed_pd_control;
+	} else {
+		me->signed_pd_control = 0;
+	}
 
 	vdev->priv = me;
 	me->vdev = vdev;
@@ -1092,6 +1118,7 @@ static unsigned int features[] = {
 	VIRTIO_FASTRPC_F_DOMAIN_NUM,
 	VIRTIO_FASTRPC_F_VQUEUE_SETTING,
 	VIRTIO_FASTRPC_F_MEM_MAP,
+	VIRTIO_FASTRPC_F_SIGNED_PD_CONTROL,
 };
 
 static struct virtio_driver virtio_fastrpc_driver = {

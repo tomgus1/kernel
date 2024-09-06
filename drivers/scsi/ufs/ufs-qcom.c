@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013-2021, Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/acpi.h>
@@ -214,7 +214,7 @@ static int ufs_qcom_ber_threshold_set(const char *val, const struct kernel_param
 	int ret;
 
 	ret = kstrtou32(val, 0, &n);
-	if (ret != 0 || n > UFS_QCOM_EVT_LEN)
+	if (ret != 0 || n > (UFS_QCOM_EVT_LEN - 1))
 		return -EINVAL;
 	if (n)
 		override_ber_threshold = true;
@@ -2049,6 +2049,24 @@ err:
 	return NULL;
 }
 
+
+/**
+ * ufs_qcom_enable_crash_on_err - read from DTS whether crash_on_err
+ * should be enabled during boot.
+ * @hba: per adapter instance
+ */
+static void ufs_qcom_enable_crash_on_err(struct ufs_hba *hba)
+{
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	struct device *dev = hba->dev;
+	struct device_node *np = dev->of_node;
+
+	if (!np)
+		return;
+	host->crash_on_err =
+		of_property_read_bool(np, "qcom,enable_crash_on_err");
+}
+
 static int ufs_qcom_bus_register(struct ufs_qcom_host *host)
 {
 	int err = 0;
@@ -2368,6 +2386,8 @@ static void ufshcd_parse_pm_levels(struct ufs_hba *hba)
 		ufshcd_is_valid_pm_lvl(spm_lvl))
 		hba->spm_lvl = spm_lvl;
 	host->is_dt_pm_level_read = true;
+
+	host->spm_lvl_default = hba->spm_lvl;
 }
 
 /*
@@ -3877,6 +3897,39 @@ static int ufs_qcom_panic_handler(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
+static void ufs_qcom_set_rate_a(struct ufs_qcom_host *host)
+{
+	size_t len;
+	u8 *data;
+	struct nvmem_cell *nvmem_cell;
+
+	nvmem_cell = nvmem_cell_get(host->hba->dev, "ufs_dev");
+	if (IS_ERR(nvmem_cell)) {
+		dev_err(host->hba->dev, "(%s) Failed to get nvmem cell\n", __func__);
+		return;
+	}
+
+	data = (u8 *)nvmem_cell_read(nvmem_cell, &len);
+	if (IS_ERR(data)) {
+		dev_err(host->hba->dev, "(%s) Failed to read from nvmem\n", __func__);
+		goto cell_put;
+	}
+
+	/*
+	 * data equal to zero shows that ufs 2.x card is connected while
+	 * non-zero value shows that ufs 3.x card is connected
+	 */
+	if (*data) {
+		host->limit_rate = PA_HS_MODE_A;
+		dev_dbg(host->hba->dev, "UFS 3.x device is detected, Mode is set to RATE A\n");
+	}
+
+	kfree(data);
+
+cell_put:
+	nvmem_cell_put(nvmem_cell);
+}
+
 /**
  * ufs_qcom_init - bind phy with controller
  * @hba: host controller instance
@@ -3889,6 +3942,7 @@ static int ufs_qcom_panic_handler(struct notifier_block *nb,
  */
 static int ufs_qcom_init(struct ufs_hba *hba)
 {
+	char type[5];
 	int err, host_id = 0;
 	struct device *dev = hba->dev;
 	struct ufs_qcom_host *host;
@@ -3910,6 +3964,7 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 	host->dbg_en = true;
 #endif
 
+	ufs_qcom_enable_crash_on_err(hba);
 	/* Setup the reset control of HCI */
 	host->core_reset = devm_reset_control_get(hba->dev, "rst");
 	if (IS_ERR(host->core_reset)) {
@@ -3982,9 +4037,13 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 					 &host->vdd_hba_reg_nb);
 
 	/* update phy revision information before calling phy_init() */
-
-	ufs_qcom_phy_save_controller_version(host->generic_phy,
+	err = ufs_qcom_phy_save_controller_version(host->generic_phy,
 			host->hw_ver.major, host->hw_ver.minor, host->hw_ver.step);
+
+	if (err == -EPROBE_DEFER) {
+		pr_err("%s: phy device probe is not completed yet\n", __func__);
+		goto out_variant_clear;
+	}
 
 	err = ufs_qcom_parse_reg_info(host, "qcom,vddp-ref-clk",
 				      &host->vddp_ref_clk);
@@ -4085,9 +4144,21 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 					  void __user *))ufs_qcom_ioctl;
 #endif
 
+	/*
+	 * Based on host_id, pass the appropriate device type
+	 * to register thermal cooling device.
+	 */
+
+	host_id = of_alias_get_id(hba->dev->of_node, "ufshc");
+	if ((host_id < 0) || (host_id > MAX_UFS_QCOM_HOSTS)) {
+		ufs_qcom_msg(ERR, hba->dev, "Failed to get host index %d\n", host_id);
+		host_id = 1;
+	}
+
+	snprintf(type, sizeof(type), "ufs%d", host_id);
 	ut->tcd = devm_thermal_of_cooling_device_register(dev,
 							  dev->of_node,
-							  "ufs",
+							  type,
 							  dev,
 							  &ufs_thermal_ops);
 	if (IS_ERR(ut->tcd))
@@ -4109,13 +4180,6 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 
 	/* register minidump */
 	if (msm_minidump_enabled()) {
-		host_id = of_alias_get_id(hba->dev->of_node, "ufshc");
-
-		if ((host_id < 0) || (host_id > MAX_UFS_QCOM_HOSTS)) {
-			ufs_qcom_msg(ERR, hba->dev, "Failed to get host index %d\n", host_id);
-			host_id = 1;
-		}
-
 		ufs_qcom_register_minidump((uintptr_t)host,
 					sizeof(struct ufs_qcom_host), "UFS_QHOST", host_id);
 		ufs_qcom_register_minidump((uintptr_t)hba,
@@ -4440,7 +4504,7 @@ static bool ufs_qcom_cal_ber(struct ufs_qcom_host *host, struct ufs_qcom_ber_his
 	int idx_start, idx_end, i;
 	s64 total_run_time = 0;
 	s64 total_full_time = 0;
-	u32 gear = h->gear[h->pos-1];
+	u32 gear = h->gear[(h->pos + UFS_QCOM_EVT_LEN - 1) % UFS_QCOM_EVT_LEN];
 
 	if (!override_ber_threshold)
 		ber_threshold = ber_table[gear].ber_threshold;
@@ -4574,7 +4638,7 @@ static void ufs_qcom_event_notify(struct ufs_hba *hba,
 		}
 
 		if (host->ber_th_exceeded)
-			dev_err(hba->dev, "Warning: BER exceed threshlod !!!\n");
+			dev_warn_ratelimited(hba->dev, "Warning: UFS BER exceeds threshold !!!\n");
 
 		break;
 	case UFS_EVT_DL_ERR:
@@ -4905,6 +4969,9 @@ static void ufs_qcom_parse_limits(struct ufs_qcom_host *host)
 	of_property_read_u32(np, "limit-rx-pwm-gear", &host->limit_rx_pwm_gear);
 	of_property_read_u32(np, "limit-rate", &host->limit_rate);
 	of_property_read_u32(np, "limit-phy-submode", &host->limit_phy_submode);
+
+	if (of_property_read_bool(np, "limit-rate-ufs3"))
+		ufs_qcom_set_rate_a(host);
 }
 
 /*
@@ -5016,6 +5083,8 @@ static struct ufs_dev_fix ufs_qcom_dev_fixups[] = {
 		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
 	UFS_FIX(UFS_VENDOR_WDC, UFS_ANY_MODEL,
 		UFS_DEVICE_QUIRK_HOST_PA_TACTIVATE),
+	UFS_FIX(UFS_VENDOR_TOSHIBA, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_DELAY_AFTER_LPM),
 	END_FIX
 };
 
@@ -5462,14 +5531,20 @@ static void ufs_qcom_hook_prepare_command(void *param, struct ufs_hba *hba,
 #if IS_ENABLED(CONFIG_QTI_CRYPTO_FDE)
 	struct ice_data_setting setting;
 
-	if (!crypto_qti_ice_config_start(rq, &setting)) {
-		if ((rq_data_dir(rq) == WRITE) ? setting.encr_bypass : setting.decr_bypass) {
-			lrbp->crypto_key_slot = -1;
-		} else {
-			lrbp->crypto_key_slot = setting.crypto_data.key_index;
-			lrbp->data_unit_num = rq->bio->bi_iter.bi_sector >>
-					      ICE_CRYPTO_DATA_UNIT_4_KB;
+	if (!rq->crypt_keyslot) {
+		if (!crypto_qti_ice_config_start(rq, &setting)) {
+			if ((rq_data_dir(rq) == WRITE) ? setting.encr_bypass :
+					setting.decr_bypass) {
+				lrbp->crypto_key_slot = -1;
+			} else {
+				lrbp->crypto_key_slot = setting.crypto_data.key_index;
+				lrbp->data_unit_num = rq->bio->bi_iter.bi_sector >>
+						      ICE_CRYPTO_DATA_UNIT_4_KB;
+			}
 		}
+	} else {
+		lrbp->crypto_key_slot = blk_ksm_get_slot_idx(rq->crypt_keyslot);
+		lrbp->data_unit_num = rq->crypt_ctx->bc_dun[0];
 	}
 #endif
 }
@@ -5597,7 +5672,9 @@ static int ufs_qcom_probe(struct platform_device *pdev)
 	if (err)
 		ufs_qcom_msg(ERR, dev, "ufshcd_pltfrm_init() failed %d\n", err);
 
-	ufs_qcom_register_hooks();
+	if (!(of_property_read_bool(np, "secondary-storage")))
+		ufs_qcom_register_hooks();
+
 	return err;
 }
 
@@ -5637,6 +5714,28 @@ static int ufs_qcom_remove(struct platform_device *pdev)
 	return 0;
 }
 
+/**
+ * ufs_qcom_enable_vccq_shutdown - read from DTS whether vccq_shutdown
+ * should be enabled for puting additional vote on VCCQ LDO during shutdown.
+ * @hba: per adapter instance
+ */
+
+static void ufs_qcom_enable_vccq_shutdown(struct ufs_hba *hba)
+{
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	int err;
+
+	err = ufs_qcom_parse_reg_info(host, "qcom,vccq-shutdown",
+			&host->vccq_shutdown);
+
+	if (host->vccq_shutdown) {
+		err = ufs_qcom_enable_vreg(hba->dev, host->vccq_shutdown);
+		if (err)
+			ufs_qcom_msg(ERR, hba->dev, "%s: failed enable vccq_shutdown err=%d\n",
+						__func__, err);
+	}
+}
+
 static void ufs_qcom_shutdown(struct platform_device *pdev)
 {
 	struct ufs_hba *hba;
@@ -5653,6 +5752,10 @@ static void ufs_qcom_shutdown(struct platform_device *pdev)
 	ufs_qcom_log_str(host, "0xdead\n");
 	if (host->dbg_en)
 		trace_ufs_qcom_shutdown(dev_name(hba->dev));
+
+	/* put an additional vote on UFS VCCQ LDO if required */
+	ufs_qcom_enable_vccq_shutdown(hba);
+
 	ufshcd_pltfrm_shutdown(pdev);
 
 	/* UFS_RESET TLMM register cannot reset to POR value '1' after warm
@@ -5687,10 +5790,25 @@ static int ufs_qcom_system_resume(struct device *dev)
 
 static int ufs_qcom_suspend_prepare(struct device *dev)
 {
+	struct ufs_hba *hba;
+	struct ufs_qcom_host *host;
+
 	if (!is_bootdevice_ufs) {
 		dev_info(dev, "UFS is not boot dev.\n");
 		return 0;
 	}
+
+	hba = dev_get_drvdata(dev);
+	host = ufshcd_get_variant(hba);
+
+	/* For deep sleep, set spm level to lvl 5 because all
+	 * regulators is turned off in DS. For other senerios
+	 * like s2idle, retain the default spm level.
+	 */
+	if (pm_suspend_target_state == PM_SUSPEND_MEM)
+		hba->spm_lvl = UFS_PM_LVL_5;
+	else
+		hba->spm_lvl = host->spm_lvl_default;
 
 	return ufshcd_suspend_prepare(dev);
 }

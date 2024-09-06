@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/of_device.h>
 #include "hab.h"
@@ -9,6 +9,40 @@
 unsigned int get_refcnt(struct kref ref)
 {
 	return kref_read(&ref);
+}
+
+static void hab_ctx_free_work_fn(struct work_struct *work)
+{
+	struct uhab_context *ctx =
+		container_of(work, struct uhab_context, destroy_work);
+
+	hab_ctx_free_fn(ctx);
+}
+
+/*
+ * ctx can only be freed after all the vchan releases the refcnt
+ * and hab_release() is called.
+ *
+ * this function might be called in atomic context in following situations
+ * (only applicable to Linux):
+ * 1. physical_channel_rx_dispatch()->hab_msg_recv()->hab_vchan_put()
+ * ->hab_ctx_put()->hab_ctx_free() in tasklet.
+ * 2. hab client holds spin_lock and calls hab_vchan_close()->hab_vchan_put()
+ * ->hab_vchan_free()->hab_ctx_free().
+ */
+void hab_ctx_free_os(struct kref *ref)
+{
+	struct uhab_context *ctx =
+		container_of(ref, struct uhab_context, refcount);
+
+	if (likely(preemptible())) {
+		hab_ctx_free_fn(ctx);
+	} else {
+		pr_info("In non-preemptive context now, ctx owner %d\n",
+			ctx->owner);
+		INIT_WORK(&ctx->destroy_work, hab_ctx_free_work_fn);
+		schedule_work(&ctx->destroy_work);
+	}
 }
 
 static int hab_open(struct inode *inodep, struct file *filep)
@@ -128,6 +162,14 @@ static long hab_copy_data(struct hab_message *msg, struct hab_recv *recv_param)
 	return ret;
 }
 
+static inline long hab_check_cmd(unsigned int cmd, unsigned int data_size)
+{
+	if (!_IOC_SIZE(cmd) || !(cmd & IOC_INOUT) || (_IOC_SIZE(cmd) > data_size))
+		return -EINVAL;
+
+	return 0;
+}
+
 static long hab_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 {
 	struct uhab_context *ctx = (struct uhab_context *)filep->private_data;
@@ -142,15 +184,15 @@ static long hab_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 	long ret = 0;
 	char names[30] = { 0 };
 
-	if (_IOC_SIZE(cmd) && (cmd & IOC_IN)) {
-		if (_IOC_SIZE(cmd) > sizeof(data))
-			return -EINVAL;
+	ret = hab_check_cmd(cmd, sizeof(data));
+	if (ret)
+		return ret;
 
-		if (copy_from_user(data, (void __user *)arg, _IOC_SIZE(cmd))) {
-			pr_err("copy_from_user failed cmd=%x size=%d\n",
-				cmd, _IOC_SIZE(cmd));
-			return -EFAULT;
-		}
+	if ((cmd & IOC_IN) &&
+	    (copy_from_user(data, (void __user *)arg, _IOC_SIZE(cmd)))) {
+		pr_err("copy_from_user failed cmd=%x size=%d\n",
+			cmd, _IOC_SIZE(cmd));
+		return -EFAULT;
 	}
 
 	switch (cmd) {
@@ -252,11 +294,12 @@ static long hab_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		ret = -ENOIOCTLCMD;
 	}
 
-	if (_IOC_SIZE(cmd) && (cmd & IOC_OUT))
-		if (copy_to_user((void __user *) arg, data, _IOC_SIZE(cmd))) {
-			pr_err("copy_to_user failed: cmd=%x\n", cmd);
-			ret = -EFAULT;
-		}
+	if ((ret != -ENOIOCTLCMD) &&
+	    (cmd & IOC_OUT) &&
+	    (copy_to_user((void __user *) arg, data, _IOC_SIZE(cmd)))) {
+		pr_err("copy_to_user failed: cmd=%x\n", cmd);
+		ret = -EFAULT;
+	}
 
 	return ret;
 }
@@ -312,10 +355,9 @@ static int hab_power_down_callback(
 	case SYS_HALT:
 	case SYS_POWER_OFF:
 		pr_debug("reboot called %ld\n", action);
-		hab_hypervisor_unregister(); /* only for single VM guest */
 		break;
 	}
-	pr_debug("reboot called %ld done\n", action);
+	pr_info("reboot called %ld done\n", action);
 	return NOTIFY_DONE;
 }
 
@@ -323,10 +365,40 @@ static struct notifier_block hab_reboot_notifier = {
 	.notifier_call = hab_power_down_callback,
 };
 
+static void reclaim_cleanup(struct work_struct *reclaim_work)
+{
+	struct export_desc *exp = NULL, *exp_tmp = NULL;
+	struct export_desc_super *exp_super = NULL;
+	struct physical_channel *pchan = NULL;
+	LIST_HEAD(free_list);
+
+	pr_debug("reclaim worker called\n");
+	spin_lock(&hab_driver.reclaim_lock);
+	list_for_each_entry_safe(exp, exp_tmp, &hab_driver.reclaim_list, node) {
+		exp_super = container_of(exp, struct export_desc_super, exp);
+		if (exp_super->remote_imported == 0)
+			list_move(&exp->node, &free_list);
+	}
+	spin_unlock(&hab_driver.reclaim_lock);
+
+	list_for_each_entry_safe(exp, exp_tmp, &free_list, node) {
+		list_del(&exp->node);
+		exp_super = container_of(exp, struct export_desc_super, exp);
+		pchan = exp->pchan;
+		spin_lock_bh(&pchan->expid_lock);
+		idr_remove(&pchan->expid_idr, exp->export_id);
+		spin_unlock_bh(&pchan->expid_lock);
+		pr_info("cleanup exp id %u from %s\n", exp->export_id, pchan->name);
+		habmem_export_put(exp_super);
+	}
+}
+
 static int __init hab_init(void)
 {
 	int result;
 	dev_t dev;
+
+	pr_info("init start, ver %X\n", HAB_API_VER);
 
 	result = alloc_chrdev_region(&hab_driver.major, 0, 1, "hab");
 
@@ -369,34 +441,41 @@ static int __init hab_init(void)
 	if (result)
 		pr_err("failed to register reboot notifier %d\n", result);
 
+	INIT_WORK(&hab_driver.reclaim_work, reclaim_cleanup);
+
 	/* read in hab config, then configure pchans */
 	result = do_hab_parse();
 
-	if (!result) {
-		hab_driver.kctx = hab_ctx_alloc(1);
-		if (!hab_driver.kctx) {
-			pr_err("hab_ctx_alloc failed\n");
-			result = -ENOMEM;
-			hab_hypervisor_unregister();
-			goto err;
-		} else {
-			/* First, try to configure system dma_ops */
-			result = dma_coerce_mask_and_coherent(
-					hab_driver.dev,
-					DMA_BIT_MASK(64));
+	if (result)
+		goto err;
 
-			/* System dma_ops failed, fallback to dma_ops of hab */
-			if (result) {
-				pr_warn("config system dma_ops failed %d, fallback to hab\n",
-						result);
-				hab_driver.dev->bus = NULL;
-				set_dma_ops(hab_driver.dev, &hab_dma_ops);
-			}
-		}
+	hab_driver.kctx = hab_ctx_alloc(1);
+	if (!hab_driver.kctx) {
+		pr_err("hab_ctx_alloc failed\n");
+		result = -ENOMEM;
+		hab_hypervisor_unregister();
+		goto err;
+	}
+	/* First, try to configure system dma_ops */
+	result = dma_coerce_mask_and_coherent(
+			hab_driver.dev,
+			DMA_BIT_MASK(64));
+
+	/* System dma_ops failed, fallback to dma_ops of hab */
+	if (result) {
+		pr_warn("config system dma_ops failed %d, fallback to hab\n",
+				result);
+		hab_driver.dev->bus = NULL;
+		set_dma_ops(hab_driver.dev, &hab_dma_ops);
 	}
 	hab_hypervisor_register_post();
 	hab_stat_init(&hab_driver);
-	return result;
+
+	WRITE_ONCE(hab_driver.hab_init_success, 1);
+
+	pr_info("succeeds\n");
+
+	return 0;
 
 err:
 	if (!IS_ERR_OR_NULL(hab_driver.dev))

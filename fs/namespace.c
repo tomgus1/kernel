@@ -1247,7 +1247,7 @@ struct vfsmount *mntget(struct vfsmount *mnt)
 		mnt_add_count(real_mount(mnt), 1);
 	return mnt;
 }
-EXPORT_SYMBOL(mntget);
+EXPORT_SYMBOL_NS_GPL(mntget, ANDROID_GKI_VFS_EXPORT_ONLY);
 
 /**
  * path_is_mountpoint() - Check if path is a mount in the current namespace.
@@ -2647,7 +2647,12 @@ static int do_remount(struct path *path, int ms_flags, int sb_flags,
 	if (IS_ERR(fc))
 		return PTR_ERR(fc);
 
+	/*
+	 * Indicate to the filesystem that the remount request is coming
+	 * from the legacy mount system call.
+	 */
 	fc->oldapi = true;
+
 	err = parse_monolithic_mount_data(fc, data);
 	if (!err) {
 		down_write(&sb->s_umount);
@@ -2980,6 +2985,12 @@ static int do_new_mount(struct path *path, const char *fstype, int sb_flags,
 	put_filesystem(type);
 	if (IS_ERR(fc))
 		return PTR_ERR(fc);
+
+	/*
+	 * Indicate to the filesystem that the mount request is coming
+	 * from the legacy mount system call.
+	 */
+	fc->oldapi = true;
 
 	if (subtype)
 		err = vfs_parse_fs_string(fc, "subtype",
@@ -3968,6 +3979,23 @@ static int can_idmap_mount(const struct mount_kattr *kattr, struct mount *mnt)
 	return 0;
 }
 
+/**
+ * mnt_allow_writers() - check whether the attribute change allows writers
+ * @kattr: the new mount attributes
+ * @mnt: the mount to which @kattr will be applied
+ *
+ * Check whether thew new mount attributes in @kattr allow concurrent writers.
+ *
+ * Return: true if writers need to be held, false if not
+ */
+static inline bool mnt_allow_writers(const struct mount_kattr *kattr,
+				     const struct mount *mnt)
+{
+	return (!(kattr->attr_set & MNT_READONLY) ||
+		(mnt->mnt.mnt_flags & MNT_READONLY)) &&
+	       !kattr->mnt_userns;
+}
+
 static struct mount *mount_setattr_prepare(struct mount_kattr *kattr,
 					   struct mount *mnt, int *err)
 {
@@ -3998,8 +4026,7 @@ static struct mount *mount_setattr_prepare(struct mount_kattr *kattr,
 
 		last = m;
 
-		if ((kattr->attr_set & MNT_READONLY) &&
-		    !(m->mnt.mnt_flags & MNT_READONLY)) {
+		if (!mnt_allow_writers(kattr, m)) {
 			*err = mnt_hold_writers(m);
 			if (*err)
 				goto out;
@@ -4050,13 +4077,8 @@ static void mount_setattr_commit(struct mount_kattr *kattr,
 			WRITE_ONCE(m->mnt.mnt_flags, flags);
 		}
 
-		/*
-		 * We either set MNT_READONLY above so make it visible
-		 * before ~MNT_WRITE_HOLD or we failed to recursively
-		 * apply mount options.
-		 */
-		if ((kattr->attr_set & MNT_READONLY) &&
-		    (m->mnt.mnt_flags & MNT_WRITE_HOLD))
+		/* If we had to hold writers unblock them. */
+		if (m->mnt.mnt_flags & MNT_WRITE_HOLD)
 			mnt_unhold_writers(m);
 
 		if (!err && kattr->propagation)

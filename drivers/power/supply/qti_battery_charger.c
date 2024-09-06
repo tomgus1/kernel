@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"BATTERY_CHG: %s: " fmt, __func__
@@ -24,6 +24,7 @@
 #include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
 #include <linux/reboot.h>
+#include <linux/thermal.h>
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/soc/qcom/battery_charger.h>
 #include <linux/soc/qcom/panel_event_notifier.h>
@@ -354,6 +355,7 @@ static int battery_chg_fw_write(struct battery_chg_dev *bcdev, void *data,
 		up_read(&bcdev->state_sem);
 		return -ENOTCONN;
 	}
+	up_read(&bcdev->state_sem);
 
 	reinit_completion(&bcdev->fw_buf_ack);
 	rc = pmic_glink_write(bcdev->client, data, len);
@@ -362,14 +364,12 @@ static int battery_chg_fw_write(struct battery_chg_dev *bcdev, void *data,
 					msecs_to_jiffies(WLS_FW_WAIT_TIME_MS));
 		if (!rc) {
 			pr_err("Error, timed out sending message\n");
-			up_read(&bcdev->state_sem);
 			return -ETIMEDOUT;
 		}
 
 		rc = 0;
 	}
 
-	up_read(&bcdev->state_sem);
 	return rc;
 }
 
@@ -389,9 +389,9 @@ static int battery_chg_write(struct battery_chg_dev *bcdev, void *data,
 		up_read(&bcdev->state_sem);
 		return 0;
 	}
+	up_read(&bcdev->state_sem);
 
 	if (bcdev->debug_battery_detected && bcdev->block_tx) {
-		up_read(&bcdev->state_sem);
 		return 0;
 	}
 
@@ -404,7 +404,6 @@ static int battery_chg_write(struct battery_chg_dev *bcdev, void *data,
 					msecs_to_jiffies(BC_WAIT_TIME_MS));
 		if (!rc) {
 			pr_err("Error, timed out sending message\n");
-			up_read(&bcdev->state_sem);
 			mutex_unlock(&bcdev->rw_lock);
 			return -ETIMEDOUT;
 		}
@@ -424,7 +423,6 @@ static int battery_chg_write(struct battery_chg_dev *bcdev, void *data,
 		}
 	}
 	mutex_unlock(&bcdev->rw_lock);
-	up_read(&bcdev->state_sem);
 
 	return rc;
 }
@@ -899,20 +897,18 @@ static int battery_chg_callback(void *priv, void *data, size_t len)
 		hdr->type, hdr->opcode, len);
 
 	down_read(&bcdev->state_sem);
-
 	if (!bcdev->initialized) {
 		pr_debug("Driver initialization failed: Dropping glink callback message: state %d\n",
 			 bcdev->state);
 		up_read(&bcdev->state_sem);
 		return 0;
 	}
+	up_read(&bcdev->state_sem);
 
 	if (hdr->opcode == BC_NOTIFY_IND)
 		handle_notification(bcdev, data, len);
 	else
 		handle_message(bcdev, data, len);
-
-	up_read(&bcdev->state_sem);
 
 	return 0;
 }
@@ -2223,11 +2219,50 @@ static int battery_chg_register_panel_notifier(struct battery_chg_dev *bcdev)
 	return 0;
 }
 
+static int
+battery_chg_get_max_charge_cntl_limit(struct thermal_cooling_device *tcd,
+					unsigned long *state)
+{
+	struct battery_chg_dev *bcdev = tcd->devdata;
+
+	*state = bcdev->num_thermal_levels;
+
+	return 0;
+}
+
+static int
+battery_chg_get_cur_charge_cntl_limit(struct thermal_cooling_device *tcd,
+					unsigned long *state)
+{
+	struct battery_chg_dev *bcdev = tcd->devdata;
+
+	*state = bcdev->curr_thermal_level;
+
+	return 0;
+}
+
+static int
+battery_chg_set_cur_charge_cntl_limit(struct thermal_cooling_device *tcd,
+					unsigned long state)
+{
+	struct battery_chg_dev *bcdev = tcd->devdata;
+
+	return battery_psy_set_charge_current(bcdev, (int)state);
+}
+
+static const struct thermal_cooling_device_ops battery_tcd_ops = {
+	.get_max_state = battery_chg_get_max_charge_cntl_limit,
+	.get_cur_state = battery_chg_get_cur_charge_cntl_limit,
+	.set_cur_state = battery_chg_set_cur_charge_cntl_limit,
+};
+
 static int battery_chg_probe(struct platform_device *pdev)
 {
 	struct battery_chg_dev *bcdev;
 	struct device *dev = &pdev->dev;
 	struct pmic_glink_client_data client_data = { };
+	struct thermal_cooling_device *tcd;
+	struct psy_state *pst;
 	int rc, i;
 
 	bcdev = devm_kzalloc(&pdev->dev, sizeof(*bcdev), GFP_KERNEL);
@@ -2321,6 +2356,17 @@ static int battery_chg_probe(struct platform_device *pdev)
 	rc = class_register(&bcdev->battery_class);
 	if (rc < 0) {
 		dev_err(dev, "Failed to create battery_class rc=%d\n", rc);
+		goto error;
+	}
+
+	pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	tcd = devm_thermal_of_cooling_device_register(dev, dev->of_node,
+			(char *)pst->psy->desc->name, bcdev, &battery_tcd_ops);
+	if (IS_ERR_OR_NULL(tcd)) {
+		rc = PTR_ERR_OR_ZERO(tcd);
+		dev_err(dev, "Failed to register thermal cooling device rc=%d\n",
+			rc);
+		class_unregister(&bcdev->battery_class);
 		goto error;
 	}
 
